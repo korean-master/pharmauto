@@ -1,0 +1,22 @@
+{
+  "setup_complete": false,
+  "db": {
+    "server": "localhost",
+    "database": "eP_PHARM",
+    "driver": "SQL Server"
+  },
+  "pharmacy_name": "",
+  "api_key": "",
+  "api_url": "https://apis.data.go.kr/B551182/dgamtCrtrInfoService1.2/getDgamtList",
+  "notification_time": "09:00",
+  "kakao_api_key": "",
+  "kakao_sender": "",
+  "schedule_enabled": false,
+  "default_wholesaler": "",
+  "github_repo": "korean-master/pharmauto",
+  "schedule_mode": "multiple",
+  "schedule_once_time": "18:30",
+  "schedule_multi_times": [],
+  "supabase_url": "https://bvxcdgnuslxobcaqdtds.supabase.co",
+  "supabase_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ2eGNkZ251c2x4b2JjYXFkdGRzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU2MDE3MTYsImV4cCI6MjA5MTE3NzcxNn0._1KW_PBoHcW2nKyNQlkO-QngtaKKusAqZpi2XxZpHt0"
+}

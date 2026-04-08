@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Build
+dist/
+build/
+*.spec
+Output/
+
+# Data (개인 데이터 - 커밋하지 않음)
+data/drug_cache.json
+data/inventory.json
+data/drug_preferences.json
+data/unit_cache.json
+data/order_history.db
+data/stock_history.json
+
+# Config (개인 설정 - 템플릿만 커밋)
+config/settings.json
+config/wholesalers.json
+
+# Selectors (개인 캐시)
+config/selectors/
+
+# Screenshots
+screenshots/
+
+# IDE
+.vscode/
+.idea/
+
+# Playwright browsers
+playwright_browsers/
+
+# Build output
+installer_output/
+dist.zip
+
+# Auth / personal config
+config/auth.json
+config/exclusions.json
+data/db_structure*.json
+
+# Misc
+*.log
+.env
