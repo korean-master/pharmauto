@@ -483,7 +483,8 @@ class DrugSetupDialog(QDialog):
 
     def _on_ok(self):
         checked_id = self._type_group.checkedId()
-        order_type = ["immediate", "stock", "manual", "exclude"][checked_id]
+        _ORDER_TYPES = {0: "immediate", 1: "stock", 2: "manual", 3: "exclude"}
+        order_type = _ORDER_TYPES.get(checked_id, "immediate")
 
         pref_unit = self._pref_spin.value()
 

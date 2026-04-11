@@ -15,9 +15,38 @@ SCREENSHOT_DIR = os.path.join(os.path.dirname(__file__), "..", "screenshots")
 # ────────────────────── 공통 유틸 ──────────────────────
 
 def parse_pack_size(std_text: str) -> int:
-    """규격 텍스트에서 포장 수량을 추출한다. 예: '30T' → 30, '500C' → 500."""
-    m = re.search(r'(\d+)\s*[TtCc]', std_text)
-    return int(m.group(1)) if m else 0
+    """규격 텍스트에서 포장 수량을 추출한다.
+
+    예: '30T' → 30, '500C' → 500, '30정' → 30, '100캡슐' → 100,
+        '30T/Box' → 30, '60mg/1정*30' → 30, '30tab' → 30
+    """
+    if not std_text:
+        return 0
+    s = std_text.strip()
+
+    # 1) "30T", "500C", "30Tab" 패턴
+    m = re.search(r'(\d+)\s*[TtCc](?:ab|ap)?', s)
+    if m:
+        return int(m.group(1))
+
+    # 2) "30정", "100캡슐", "30포", "30매" 패턴
+    m = re.search(r'(\d+)\s*(?:정|캡슐|포|캡|매|병|개)', s)
+    if m:
+        return int(m.group(1))
+
+    # 3) "*30" 또는 "x30" 패턴 (예: "60mg/1정*30")
+    m = re.search(r'[*xX×]\s*(\d+)', s)
+    if m:
+        return int(m.group(1))
+
+    # 4) 마지막 숫자 (예: "록소탄 30")
+    m = re.findall(r'(\d+)', s)
+    if m:
+        val = int(m[-1])
+        if val >= 5:  # 5 미만은 용량일 가능성 높음
+            return val
+
+    return 0
 
 
 def choose_best_pack(candidates: list[dict], quantity: int,
@@ -42,18 +71,18 @@ def choose_best_pack(candidates: list[dict], quantity: int,
                 c["box_qty"] = max(1, math.ceil(quantity / c["pack_size"]))
                 return c
 
+        # 정확한 매칭 실패 → 선호규격보다 작거나 같은 것 중 가장 가까운 규격
+        smaller = [c for c in candidates if c["pack_size"] <= preferred_unit]
+        if smaller:
+            chosen = max(smaller, key=lambda c: c["pack_size"])
+        else:
+            # 선호규격보다 작은 게 없으면 가장 작은 규격
+            chosen = min(candidates, key=lambda c: c["pack_size"])
+        chosen["box_qty"] = max(1, math.ceil(quantity / chosen["pack_size"]))
+        return chosen
+
     # 선호규격 미설정(0 또는 None)이면 최소 단위를 기본으로 선택
-    if not preferred_unit:
-        chosen = min(candidates, key=lambda c: c["pack_size"])
-    else:
-        # 선호규격이 있었지만 매칭 실패(해당 규격 없음) 시, 낭비 최소화 규격 선택
-        chosen = min(
-            candidates,
-            key=lambda c: (
-                math.ceil(quantity / c["pack_size"]) * c["pack_size"] - quantity,
-                math.ceil(quantity / c["pack_size"]),
-            ),
-        )
+    chosen = min(candidates, key=lambda c: c["pack_size"])
     chosen["box_qty"] = max(1, math.ceil(quantity / chosen["pack_size"]))
     return chosen
 

@@ -52,7 +52,7 @@ class StartupUpdateDialog(QDialog):
         self._success = False
 
         self.setWindowTitle("PharmAuto 업데이트")
-        self.setFixedSize(440, 200)
+        self.setMinimumSize(440, 200)
         self.setWindowFlags(
             Qt.WindowType.Dialog
             | Qt.WindowType.CustomizeWindowHint
@@ -112,10 +112,12 @@ class StartupUpdateDialog(QDialog):
 
         if success:
             self._success = True
-            self._status.setText("업데이트 완료! 재시작합니다...")
+            self._status.setText("업데이트 설치 중... 잠시 후 자동으로 시작됩니다.")
             self._status.setStyleSheet(f"font-size: 12px; color: {GREEN}; font-weight: 700;")
             self._progress_bar.setVisible(False)
-            QTimer.singleShot(1500, self._do_restart)
+            self._restart_label.setText("")
+            # 설치 프로그램이 실행됐으므로 앱 종료
+            QTimer.singleShot(1500, self._exit_for_install)
         else:
             self._status.setText("업데이트 실패 — 현재 버전으로 실행합니다.")
             self._status.setStyleSheet(f"font-size: 12px; color: {RED}; font-weight: 700;")
@@ -123,9 +125,9 @@ class StartupUpdateDialog(QDialog):
             self._restart_label.setText("")
             QTimer.singleShot(2000, self.accept)
 
-    def _do_restart(self):
-        from core.updater import restart_app
-        restart_app()
+    def _exit_for_install(self):
+        """설치 프로그램이 파일을 교체할 수 있도록 앱을 종료한다."""
+        sys.exit(0)
 
     @property
     def update_success(self) -> bool:

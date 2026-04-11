@@ -135,6 +135,8 @@ class BaekjeWholesaler(WholesalerBase):
                 except ValueError:
                     pass
 
+            print(f"[규격 파싱] '{unit_text}' → {pack_size}T ({drug_name})")
+
             if pack_size > 0:
                 candidates.append({
                     "row": row_el, "pack_size": pack_size,
@@ -161,8 +163,10 @@ class BaekjeWholesaler(WholesalerBase):
             result["unit_options"] = unit_options
 
             # 최적 규격 선택 (공통 로직)
+            print(f"[규격 선택] 선호={preferred_unit}, 후보={unit_options}, 수량={quantity}")
             chosen = choose_best_pack(candidates, quantity, preferred_unit)
             box_qty = chosen["box_qty"]
+            print(f"[규격 선택] → {chosen['pack_size']}T x{box_qty}")
 
             result["drug_name"] = chosen["drug_name"]
             result["pack_size"] = chosen["pack_size"]

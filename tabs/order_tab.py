@@ -198,14 +198,13 @@ class FetchWorker(QThread):
             from core.db_reader import fetch_last_month_usage, fetch_prescriptions
             from core.drug_api import get_drug_names
 
-            self.progress.emit("DB 연결 중...")
+            self.progress.emit("처방 데이터 조회 중...")
             prescriptions = fetch_prescriptions(self.time_range)
-            self.progress.emit(f"출고 {len(prescriptions)}건 조회 완료, 전월 데이터 조회 중...")
+            self.progress.emit(f"{len(prescriptions)}건 조회 완료")
             last_month = fetch_last_month_usage()
 
             # 통합 약품명 조회 (캐시 → DB → API 순)
             codes = [rx["insurance_code"] for rx in prescriptions]
-            self.progress.emit("약품명 조회 중...")
             drug_names = get_drug_names(codes)
 
             results = []
@@ -588,6 +587,9 @@ class OrderTab(QWidget):
     def _on_fetch_done(self, data: list):
         self.fetch_btn.setEnabled(True)
         self._spinner.hide_spinner()
+
+        # 제외 목록 최신 상태로 갱신 (설정 탭에서 해제했을 수 있음)
+        self.exclusions = _load_json("exclusions.json")
 
         now = datetime.now()
         filtered = []
@@ -1100,13 +1102,15 @@ class OrderTab(QWidget):
                 self.bulk_ws_combo.blockSignals(False)
 
     def _on_bulk_ws_changed(self):
-        """기본 도매상 콤보 변경 → settings.json 저장 + 설정 탭 동기화."""
+        """기본 도매상 콤보 변경 → 테이블 전체 반영 + settings.json 저장."""
         wid = self.bulk_ws_combo.currentData()
         if not wid:
             return
         settings = _load_json("settings.json")
         settings["default_wholesaler"] = wid
         _save_json("settings.json", settings)
+        # 테이블의 모든 행 도매상도 변경
+        self._on_bulk_apply()
         # 예약 요약도 갱신
         self._refresh_schedule_summary()
         # 설정 탭 동기화
@@ -1586,12 +1590,15 @@ class OrderTab(QWidget):
     def reload_wholesalers(self):
         self.wholesalers = _load_json("wholesalers.json")
         self._populate_ws_combo(self.bulk_ws_combo)
+        # 기본 도매상 콤보 동기화
+        self._sync_bulk_ws_from_settings()
+        # 테이블 각 행도 기본 도매상으로 세팅
+        default_ws = _load_json("settings.json").get("default_wholesaler", "")
         for row in range(self.table.rowCount()):
             combo = self.table.cellWidget(row, 7)
             if isinstance(combo, QComboBox):
-                prev = combo.currentData()
                 self._populate_ws_combo(combo)
-                if prev:
-                    idx = combo.findData(prev)
+                if default_ws:
+                    idx = combo.findData(default_ws)
                     if idx >= 0:
                         combo.setCurrentIndex(idx)
