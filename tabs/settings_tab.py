@@ -71,14 +71,14 @@ class SettingsTab(QWidget):
         layout.setSpacing(16)
         layout.setContentsMargins(24, 24, 24, 24)
 
-        # === 이팜 DB 연결 설정 카드 ===
+        # === 약국 정보 카드 ===
         db_card = QFrame()
         db_card.setStyleSheet(CARD_FRAME)
         db_lay = QVBoxLayout(db_card)
         db_lay.setContentsMargins(24, 24, 24, 24)
         db_lay.setSpacing(12)
 
-        db_title = QLabel("이팜 컴퓨터 연결")
+        db_title = QLabel("약국 정보")
         db_title.setStyleSheet(TITLE)
         db_lay.addWidget(db_title)
 
@@ -90,33 +90,19 @@ class SettingsTab(QWidget):
         self.pharmacy_name_input.setPlaceholderText("약국 이름")
         db_form.addRow("약국명", self.pharmacy_name_input)
 
+        # 내부용 — UI 숨김
         self.db_server_input = QLineEdit()
-        self.db_server_input.setPlaceholderText("예: localhost 또는 192.168.0.10")
-        db_form.addRow("서버 주소", self.db_server_input)
-
         self.db_name_input = QLineEdit()
-        self.db_name_input.setPlaceholderText("예: eP_PHARM")
-        db_form.addRow("데이터베이스", self.db_name_input)
-
         self.db_driver_input = QLineEdit()
-        self.db_driver_input.setPlaceholderText("예: SQL Server")
-        db_form.addRow("ODBC 드라이버", self.db_driver_input)
 
         db_lay.addLayout(db_form)
 
         db_btn_row = QHBoxLayout()
         db_btn_row.setSpacing(8)
-
-        test_db_btn = QPushButton("연결 테스트")
-        test_db_btn.setStyleSheet(btn_primary())
-        test_db_btn.clicked.connect(self._test_db_connection)
-        db_btn_row.addWidget(test_db_btn)
+        db_btn_row.addStretch()
 
         self.db_status_label = QLabel("")
         self.db_status_label.setStyleSheet(DESCRIPTION)
-        db_btn_row.addWidget(self.db_status_label)
-
-        db_btn_row.addStretch()
 
         save_db_btn = QPushButton("저장")
         save_db_btn.setStyleSheet(btn_success())
@@ -527,13 +513,8 @@ class SettingsTab(QWidget):
         upd_desc.setStyleSheet(DESCRIPTION)
         upd_lay.addWidget(upd_desc)
 
-        repo_row = QHBoxLayout()
-        repo_row.setSpacing(8)
-        repo_row.addWidget(QLabel("GitHub 저장소:"))
+        # 저장소 — 내부용, UI 숨김
         self.repo_input = QLineEdit()
-        self.repo_input.setPlaceholderText("예: myname/PharmAuto")
-        repo_row.addWidget(self.repo_input)
-        upd_lay.addLayout(repo_row)
 
         upd_btn_row = QHBoxLayout()
         upd_btn_row.setSpacing(8)
@@ -548,12 +529,6 @@ class SettingsTab(QWidget):
         upd_btn_row.addWidget(self.upd_status_label)
 
         upd_btn_row.addStretch()
-
-        save_upd_btn = QPushButton("저장")
-        save_upd_btn.setStyleSheet(btn_success())
-        save_upd_btn.clicked.connect(self._save_update_settings)
-        upd_btn_row.addWidget(save_upd_btn)
-
         upd_lay.addLayout(upd_btn_row)
         layout.addWidget(db_card)
         layout.addWidget(upd_card)
@@ -570,9 +545,7 @@ class SettingsTab(QWidget):
         inspect_lay.addWidget(inspect_title)
 
         inspect_desc = QLabel(
-            "유팜/IT3000 등 이팜 외 프로그램 사용 시, "
-            "DB 구조를 내보내서 개발자에게 보내주세요.\n"
-            "테이블명과 컬럼명만 수집하며, 환자 정보 등 개인정보는 포함되지 않습니다."
+            "환자 등 개인정보는 포함되지 않습니다."
         )
         inspect_desc.setStyleSheet(DESCRIPTION)
         inspect_desc.setWordWrap(True)
@@ -845,10 +818,10 @@ class SettingsTab(QWidget):
                     config = decrypt_dict_fields(
                         dict(self._data), ["id", "pw"]
                     )
-                    self._write_log(f"  복호화 완료: id={config.get('id', '')[:3]}***, url={config.get('url', '')}")
+                    self._write_log(f"  복호화 완료")
                 except Exception as e:
                     self._write_log(f"  복호화 실패: {e}")
-                    self.done.emit(self._row, self._wid, f"복호화 오류: {e}")
+                    self.done.emit(self._row, self._wid, "연동 오류")
                     return
 
                 # 1단계: URL 접속 확인
@@ -857,17 +830,16 @@ class SettingsTab(QWidget):
                     resp = _req.get(config["url"], timeout=5, allow_redirects=True)
                     self._write_log(f"  URL 접속: {resp.status_code}")
                     if resp.status_code >= 500:
-                        self.done.emit(self._row, self._wid, f"사이트 오류 ({resp.status_code})")
+                        self.done.emit(self._row, self._wid, "사이트 오류")
                         return
                 except Exception as e:
                     self._write_log(f"  URL 접속 실패: {e}")
-                    self.done.emit(self._row, self._wid, f"접속 불가: {type(e).__name__}")
+                    self.done.emit(self._row, self._wid, "접속 불가")
                     return
 
                 # 2단계: 자가 치유 루프 (최대 4회 재분석→재시도)
                 MAX_ATTEMPTS = 4
                 last_status = "연동 오류"
-                last_detail = ""
 
                 try:
                     from core.order_engine import _get_wholesaler_class
@@ -924,7 +896,6 @@ class SettingsTab(QWidget):
                         # 실패 처리
                         stage = result.get("stage", "")
                         message = result.get("message", "")
-                        last_detail = message
                         self._write_log(f"  실패 stage={stage}: {message}")
 
                         if stage == "login":
@@ -942,14 +913,9 @@ class SettingsTab(QWidget):
                     import traceback
                     self._write_log(f"  예외 발생: {e}")
                     self._write_log(traceback.format_exc())
-                    last_status = f"오류: {type(e).__name__}"
-                    last_detail = str(e)
+                    last_status = "연동 오류"
 
-                # 실패 시 상세 원인 포함
-                if last_status != "정상" and last_detail:
-                    short = last_detail[:40]
-                    last_status = f"{last_status} ({short})"
-
+                # 상세는 로그에만 남김 — UI에는 기본 상태만 표시
                 self._write_log(f"  최종 결과: {last_status}")
                 self.done.emit(self._row, self._wid, last_status)
 
@@ -992,14 +958,11 @@ class SettingsTab(QWidget):
                 else:
                     color = Qt.GlobalColor.red
                 status_item.setForeground(color)
-                # 툴팁으로 전체 메시지 표시
-                status_item.setToolTip(display_text)
 
-        # 결과를 wholesalers.json에 저장 — 기본 상태만 저장
-        base_status = status_text.split(" (")[0] if " (" in status_text else status_text
+        # 결과를 wholesalers.json에 저장
         ws = _load_json("wholesalers.json")
         if wid in ws:
-            ws[wid]["connection_status"] = base_status
+            ws[wid]["connection_status"] = status_text
             ws[wid]["history_supported"] = history_ok
             _save_json("wholesalers.json", ws)
 
