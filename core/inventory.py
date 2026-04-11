@@ -63,7 +63,18 @@ def set_current_stock(insurance_code: str, stock: int):
     inv = load_inventory()
     cfg = inv.get(insurance_code)
     if not cfg:
-        return
+        # 미등록 약품이면 기본 config 생성
+        cfg = {
+            "name": "",
+            "order_type": "immediate",
+            "preferred_unit": 0,
+            "target_stock": 0,
+            "unit": "정",
+            "base_stock": 0,
+            "current_stock": 0,
+            "app_order_stock": 0,
+        }
+        inv[insurance_code] = cfg
 
     old = cfg.get("base_stock", cfg.get("current_stock", 0))
     now = datetime.now()
@@ -251,6 +262,61 @@ def update_stock_after_return(insurance_code: str, return_qty: int):
         save_inventory(inv)
         _add_history(insurance_code, cfg.get("name", ""), "return",
                      -return_qty, cfg["current_stock"])
+
+
+def sync_stock_with_order_history():
+    """주문 이력과 app_order_stock 불일치를 자동 보정한다.
+
+    앱 시작 시 1회 호출. 주문은 성공했지만 재고 업데이트가 누락된 경우 복구.
+    """
+    try:
+        from core.order_engine import get_order_history
+    except Exception:
+        return
+
+    inv = load_inventory()
+    history = get_order_history(90)  # 최근 90일
+
+    # 성공한 주문만 수량 합산 (정 단위) — failed 제외
+    order_totals = {}
+    for h in history:
+        code = h.get("insurance_code", "")
+        if not code:
+            continue
+        if h.get("status") in ("failed", "out_of_stock"):
+            continue
+        pack_size = h.get("pack_size", 0)
+        box_qty = h.get("box_qty", 0)
+        if pack_size and box_qty:
+            actual = box_qty * pack_size
+        else:
+            actual = h.get("qty", 0)
+        order_totals[code] = order_totals.get(code, 0) + actual
+
+    # 불일치 보정 — order_totals에 있는 약품 + app_order_stock > 0인데 이력에 없는 약품
+    changed = False
+
+    # 1) 이력에 있는 약품: 합산값으로 보정
+    for code, ordered in order_totals.items():
+        cfg = inv.get(code)
+        if not cfg:
+            continue
+        app_stock = cfg.get("app_order_stock", 0)
+        if ordered != app_stock:
+            cfg["app_order_stock"] = ordered
+            cfg["current_stock"] = get_current_stock(code)
+            changed = True
+
+    # 2) app_order_stock > 0인데 성공 이력이 없는 약품: 0으로 리셋
+    for code, cfg in inv.items():
+        app_stock = cfg.get("app_order_stock", 0)
+        if app_stock > 0 and code not in order_totals:
+            cfg["app_order_stock"] = 0
+            cfg["current_stock"] = get_current_stock(code)
+            changed = True
+
+    if changed:
+        save_inventory(inv)
 
 
 # ──────────────────────── 주문량 계산 ────────────────────────

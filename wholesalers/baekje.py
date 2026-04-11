@@ -50,11 +50,33 @@ class BaekjeWholesaler(WholesalerBase):
         if login_success:
             self._progress("로그인 성공")
             await self._screenshot("baekje_01_login.png")
+
+            # 로그인 후 팝업/다이얼로그 자동 닫기
+            await self._close_popup(page)
         else:
             self._progress("로그인 실패")
             await self._screenshot("baekje_01_login_fail.png")
 
         return login_success
+
+    @staticmethod
+    async def _close_popup(page):
+        """백제약품 q-dialog 팝업을 닫는다."""
+        for _ in range(3):
+            try:
+                close = page.locator(
+                    '.q-dialog button:has-text("닫기"), '
+                    '.q-dialog button:has-text("확인"), '
+                    '.q-dialog button:has-text("취소"), '
+                    '.q-dialog .q-btn--flat'
+                ).first
+                if await close.count() > 0 and await close.is_visible():
+                    await close.click(timeout=3000)
+                    await page.wait_for_timeout(1000)
+                else:
+                    break
+            except Exception:
+                break
 
     # ------ 약품 검색 & 장바구니 담기 ------
 
@@ -66,7 +88,9 @@ class BaekjeWholesaler(WholesalerBase):
                   "quantity": quantity, "box_qty": 0, "pack_size": 0,
                   "drug_name": "", "message": "", "unit_options": []}
 
-        # 검색
+        # 팝업 닫기 후 검색
+        await self._close_popup(page)
+
         search_input = await page.query_selector('input[placeholder*="품목명"]')
         if not search_input:
             search_input = await page.query_selector('input[placeholder*="보험코드"]')
@@ -154,29 +178,36 @@ class BaekjeWholesaler(WholesalerBase):
             f"  {result['drug_name']} 장바구니 담는 중... ({idx}/{total})"
         )
 
+        # 팝업이 가리면 먼저 닫기
+        await self._close_popup(page)
+
         # 해당 행 클릭하여 선택
-        await chosen["row"].click()
+        try:
+            await chosen["row"].click(force=True)
+        except Exception:
+            await self._close_popup(page)
+            await chosen["row"].click(force=True)
         await page.wait_for_timeout(1000)
 
         # 수량 input에 박스 수 입력
         qty_input = await page.query_selector('.td-qty input')
         if qty_input:
-            await qty_input.click()
+            await qty_input.click(force=True)
             await qty_input.fill(str(box_qty))
             await page.wait_for_timeout(300)
 
         # 담기 버튼 클릭
+        await self._close_popup(page)
         add_btn = await page.query_selector('button:has-text("담기")')
         if add_btn:
-            await add_btn.click()
+            await add_btn.click(force=True)
             await page.wait_for_timeout(2000)
 
-        # 팝업/토스트 닫기
+        # 팝업 닫기
         try:
-            confirm_btn = await page.query_selector(
-                '.q-dialog button:has-text("확인")'
-            )
-            if confirm_btn:
+            await page.wait_for_timeout(1000)
+            confirm_btn = page.locator('.q-dialog button:has-text("확인")').first
+            if await confirm_btn.count() > 0:
                 await confirm_btn.click()
                 await page.wait_for_timeout(500)
         except Exception:
@@ -184,9 +215,37 @@ class BaekjeWholesaler(WholesalerBase):
 
         await self._screenshot(f"baekje_cart_{idx:02d}_{insurance_code}.png")
 
+        # 담기 성공 여부는 base._detect_cart_failure()에서 공통 판별
         result["success"] = True
         result["message"] = f"{result['pack_size']}T x{box_qty} 담기 완료"
         return result
+
+    # ------ 장바구니 카운트 ------
+
+    async def _get_cart_count(self) -> int:
+        """백제약품 장바구니 아이템 수를 읽는다."""
+        import re
+        try:
+            page = self._page
+            # "주문 (1)" 형태 — 모든 a/span 태그에서 검색
+            all_els = await page.query_selector_all('a, span')
+            for el in all_els:
+                try:
+                    text = (await el.inner_text()).strip()
+                    m = re.match(r'^주문\s*\((\d+)\)$', text)
+                    if m:
+                        return int(m.group(1))
+                except Exception:
+                    continue
+
+            # "총 주문 품목 N 건" 형태
+            content = await page.content()
+            m = re.search(r'총\s*주문\s*품목\s*(\d+)', content)
+            if m:
+                return int(m.group(1))
+        except Exception:
+            pass
+        return -1
 
     # ------ 주문확정 ------
 
@@ -194,6 +253,193 @@ class BaekjeWholesaler(WholesalerBase):
         btn = self._page.locator('button:has-text("주문등록")')
         await btn.click(force=True)
         await self._page.wait_for_timeout(5000)
+
+    # ------ 입고이력 검색 ------
+
+    async def search_history_async(self, drug_name: str,
+                                   lot_number: str = "",
+                                   headless: bool = True) -> list[dict]:
+        """백제약품 /dist/return(반품) 페이지에서 입고이력을 검색한다.
+
+        이 페이지에는 품목명 + 제조번호(로트번호) 검색 필드가 있어서
+        정확한 매칭이 가능하다.
+
+        검색 요소:
+          - input[placeholder*="품목명/보험코드"] : 약품명
+          - input[placeholder*="제조번호"] : 로트번호
+          - button:has-text("3년") : 기간 3년
+          - button:has-text("검색") : 검색 실행
+        테이블[0]: 품명, 입고, 규격, 수량, 반품, 거래회수, 단가, 이력, 반품가능수량
+        테이블[1]: 주문일자, 단가, 유효기간, 제조번호, 납입수량
+        """
+        results = []
+        try:
+            self._progress(f"백제약품 입고이력 검색: {drug_name}")
+            ok = await self.login_async(headless=headless)
+            if not ok:
+                self._progress("백제약품 로그인 실패")
+                return results
+
+            page = self._page
+
+            # 반품 페이지 (입고이력 검색 포함)
+            await page.goto(
+                "http://www.ibjp.kr/dist/return",
+                wait_until="domcontentloaded",
+                timeout=15000,
+            )
+            await page.wait_for_timeout(2000)
+
+            # 팝업/다이얼로그가 있으면 먼저 닫기
+            try:
+                close_btn = page.locator(
+                    '.q-dialog button:has-text("닫기"), '
+                    '.q-dialog button:has-text("확인"), '
+                    '.q-dialog button:has-text("취소"), '
+                    '.q-dialog .q-btn--flat'
+                ).first
+                if await close_btn.count() > 0:
+                    await close_btn.click(timeout=3000)
+                    await page.wait_for_timeout(1000)
+            except Exception:
+                pass
+
+            # 기간을 5년으로 설정
+            btn_5y = page.locator('button:has-text("5년")')
+            if await btn_5y.count() > 0:
+                await btn_5y.click(force=True)
+                await page.wait_for_timeout(500)
+
+            # 약품명 검색
+            search_input = page.locator(
+                'input[placeholder*="품목명"], input[placeholder*="보험코드"]'
+            ).first
+            await search_input.fill(drug_name)
+
+            # 제조번호(로트번호) 입력
+            if lot_number:
+                lot_input = page.locator('input[placeholder*="제조번호"]').first
+                if await lot_input.count() > 0:
+                    await lot_input.fill(lot_number)
+
+            # 검색 버튼
+            search_btn = page.locator('button:has-text("검색")').first
+            await search_btn.click()
+            await page.wait_for_timeout(4000)
+
+            # 로트번호 검색 시 → 매칭된 결과만 나오므로 matched=True
+            has_lot = bool(lot_number)
+
+            # 모든 테이블 파싱 (메인 + 상세)
+            all_tables = page.locator("table.q-table")
+            table_count = await all_tables.count()
+            self._progress(f"백제약품 테이블 {table_count}개 발견")
+
+            # 키워드 필터링
+            search_keywords = [k.strip() for k in drug_name.split() if k.strip()]
+
+            # 메인 테이블 (첫 번째): 품명, 입고, 규격, 수량, 반품, 거래회수, 단가, 이력, 반품가능수량
+            if table_count > 0:
+                main_rows = all_tables.nth(0).locator("tbody tr")
+                main_count = await main_rows.count()
+
+                for i in range(min(main_count, 50)):
+                    try:
+                        row = main_rows.nth(i)
+                        cells = row.locator("td")
+                        cell_count = await cells.count()
+                        if cell_count < 5:
+                            continue
+
+                        drug = (await cells.nth(0).inner_text()).strip()
+                        input_date = (await cells.nth(1).inner_text()).strip()
+                        spec = (await cells.nth(2).inner_text()).strip()
+                        qty_text = (await cells.nth(3).inner_text()).strip()
+                        returnable = (await cells.nth(8).inner_text()).strip() if cell_count > 8 else ""
+
+                        if not drug or "없습니다" in drug or "검색" in drug:
+                            continue
+
+                        import re
+                        if re.match(r'^\d{4}-\d{2}-\d{2}', drug):
+                            continue
+
+                        # 키워드 필터링
+                        drug_lower = drug.lower()
+                        if not all(kw.lower() in drug_lower for kw in search_keywords):
+                            continue
+
+                        result = {
+                            "drug_name": drug,
+                            "order_date": input_date,
+                            "spec": spec,
+                            "qty": self._extract_number(qty_text),
+                            "returnable_qty": self._extract_number(returnable),
+                            "lot_number": "",
+                            "wholesaler_id": "baekje",
+                            "wholesaler_name": "백제약품",
+                            "source": "백제약품",
+                            "matched": False,
+                        }
+                        results.append(result)
+                    except Exception:
+                        continue
+
+            # 상세 테이블 (두 번째): 주문일자, 단가, 유효기간, 제조번호, 납입수량
+            # 로트번호 검색 시 여기서 정확한 주문일자/제조번호 확인 가능
+            if table_count > 1 and has_lot:
+                detail_rows = all_tables.nth(1).locator("tbody tr")
+                detail_count = await detail_rows.count()
+
+                for i in range(min(detail_count, 20)):
+                    try:
+                        row = detail_rows.nth(i)
+                        cells = row.locator("td")
+                        cell_count = await cells.count()
+                        if cell_count < 4:
+                            continue
+
+                        d_date = (await cells.nth(0).inner_text()).strip()
+                        d_expiry = (await cells.nth(2).inner_text()).strip() if cell_count > 2 else ""
+                        d_lot = (await cells.nth(3).inner_text()).strip() if cell_count > 3 else ""
+                        d_qty = (await cells.nth(4).inner_text()).strip() if cell_count > 4 else ""
+
+                        if not d_date or "없습니다" in d_date:
+                            continue
+
+                        import re
+                        if not re.match(r'^\d{4}-\d{2}-\d{2}', d_date):
+                            continue
+
+                        # 로트번호가 일치하면 해당 결과를 matched=True로
+                        lot_matched = (
+                            lot_number and d_lot and
+                            lot_number.lower() in d_lot.lower()
+                        )
+                        for r in results:
+                            if not r.get("detail_date"):
+                                r["detail_date"] = d_date
+                                r["lot_number"] = d_lot
+                                r["expiry"] = d_expiry
+                                r["detail_qty"] = self._extract_number(d_qty)
+                                if lot_matched:
+                                    r["matched"] = True
+                                break
+                    except Exception:
+                        continue
+
+        except Exception as e:
+            self._progress(f"백제약품 이력 검색 오류: {e}")
+        finally:
+            await self._close()
+
+        return results
+
+    @staticmethod
+    def _extract_number(text: str) -> int:
+        import re
+        nums = re.sub(r'[^\d]', '', text)
+        return int(nums) if nums else 0
 
     # ------ 테스트 ------
 

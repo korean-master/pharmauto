@@ -250,7 +250,7 @@ class SetupWizard(QDialog):
         # 제목
         title = QLabel("PharmAuto 초기 설정")
         title.setStyleSheet(
-            "font-size: 22px; font-weight: 700; color: #191F28; "
+            "font-size: 22px; font-weight: 700; color: #1A1A2E; "
             "font-family: 'Malgun Gothic';"
         )
         layout.addWidget(title)
@@ -259,7 +259,7 @@ class SetupWizard(QDialog):
             "읽기 전용으로 DB를 탐색합니다. 기존 프로그램에 영향을 주지 않습니다."
         )
         safety.setStyleSheet(
-            "font-size: 12px; color: #30D158; font-weight: 600; "
+            "font-size: 12px; color: #22C55E; font-weight: 600; "
             "font-family: 'Malgun Gothic'; padding: 8px 12px; "
             "background: #F0FFF4; border-radius: 6px;"
         )
@@ -268,13 +268,13 @@ class SetupWizard(QDialog):
         # 구분선
         line = QLabel()
         line.setFixedHeight(1)
-        line.setStyleSheet("background: #E5E8EB;")
+        line.setStyleSheet("background: #DFE1E6;")
         layout.addWidget(line)
 
         # 약국 프로그램 선택
         prog_label = QLabel("사용 중인 약국 프로그램을 선택하세요")
         prog_label.setStyleSheet(
-            "font-size: 14px; font-weight: 600; color: #191F28; "
+            "font-size: 14px; font-weight: 600; color: #1A1A2E; "
             "font-family: 'Malgun Gothic';"
         )
         layout.addWidget(prog_label)
@@ -300,7 +300,7 @@ class SetupWizard(QDialog):
         self._progress_bar.setFixedHeight(8)
         self._progress_bar.setStyleSheet(
             "QProgressBar { border: none; background: #F2F3F5; border-radius: 4px; }"
-            "QProgressBar::chunk { background: #3182F6; border-radius: 4px; }"
+            "QProgressBar::chunk { background: #4B6BFB; border-radius: 4px; }"
         )
         self._progress_bar.setVisible(False)
         layout.addWidget(self._progress_bar)
@@ -308,7 +308,7 @@ class SetupWizard(QDialog):
         # 상태 메시지
         self._status = QLabel("")
         self._status.setStyleSheet(
-            "font-size: 12px; color: #8B95A1; font-family: 'Malgun Gothic';"
+            "font-size: 12px; color: #6B7280; font-family: 'Malgun Gothic';"
         )
         self._status.setVisible(False)
         layout.addWidget(self._status)
@@ -320,9 +320,9 @@ class SetupWizard(QDialog):
         self._start_btn = QPushButton("설정 시작")
         self._start_btn.setStyleSheet(
             "QPushButton { font-size: 14px; padding: 10px 32px; "
-            "background: #3182F6; color: white; border: none; "
+            "background: #4B6BFB; color: white; border: none; "
             "border-radius: 8px; font-weight: 600; font-family: 'Malgun Gothic'; }"
-            "QPushButton:hover { background: #1B64DA; }"
+            "QPushButton:hover { background: #3A56D4; }"
             "QPushButton:disabled { background: #CCC; }"
         )
         self._start_btn.clicked.connect(self._on_start)
@@ -367,7 +367,7 @@ class SetupWizard(QDialog):
                 # 이팜: 바로 완료
                 self._status.setText("설정 완료!")
                 self._status.setStyleSheet(
-                    "font-size: 13px; color: #30D158; font-weight: 700; "
+                    "font-size: 13px; color: #22C55E; font-weight: 700; "
                     "font-family: 'Malgun Gothic';"
                 )
                 QTimer.singleShot(1000, self.accept)
@@ -375,7 +375,7 @@ class SetupWizard(QDialog):
                 # 이팜 외: DB 연결은 됐지만 연동 준비 중 안내
                 self._status.setText("DB 연결 성공!")
                 self._status.setStyleSheet(
-                    "font-size: 13px; color: #30D158; font-weight: 700; "
+                    "font-size: 13px; color: #22C55E; font-weight: 700; "
                     "font-family: 'Malgun Gothic';"
                 )
                 QMessageBox.information(
@@ -391,7 +391,7 @@ class SetupWizard(QDialog):
             self._progress_bar.setVisible(False)
             self._status.setText(result["error"])
             self._status.setStyleSheet(
-                "font-size: 12px; color: #F45452; font-family: 'Malgun Gothic';"
+                "font-size: 12px; color: #EF4444; font-family: 'Malgun Gothic';"
             )
             self._start_btn.setEnabled(True)
             self._start_btn.setText("다시 시도")

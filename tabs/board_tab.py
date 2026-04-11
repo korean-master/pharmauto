@@ -48,7 +48,7 @@ class BoardTab(QWidget):
         f_lay.setSpacing(12)
 
         title = QLabel("약국 직거래 게시판")
-        title.setStyleSheet("font-size: 18px; font-weight: 700; color: #191F28;")
+        title.setStyleSheet("font-size: 18px; font-weight: 700; color: #1A1A2E;")
         f_lay.addWidget(title)
 
         filter_row = QHBoxLayout()
@@ -73,7 +73,7 @@ class BoardTab(QWidget):
                 background-color: {_BLUE}; color: white; padding: 10px 20px;
                 border-radius: 12px; font-weight: 700; border: none;
             }}
-            QPushButton:hover {{ background-color: #1B64DA; }}
+            QPushButton:hover {{ background-color: #3A56D4; }}
         """)
         search_btn.clicked.connect(self._on_search)
         filter_row.addWidget(search_btn)

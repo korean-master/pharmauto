@@ -34,7 +34,7 @@ class JobTab(QWidget):
 
         top = QHBoxLayout()
         title = QLabel("구인구직")
-        title.setStyleSheet("font-size: 18px; font-weight: 700; color: #191F28;")
+        title.setStyleSheet("font-size: 18px; font-weight: 700; color: #1A1A2E;")
         top.addWidget(title)
         top.addStretch()
         refresh_btn = QPushButton("새로고침")

@@ -161,15 +161,184 @@ class JioeyoungWholesaler(WholesalerBase):
 
         await self._screenshot(f"jioeyoung_cart_{idx:02d}_{insurance_code}.png")
 
+        # 담기 성공 여부는 base._detect_cart_failure()에서 공통 판별
         result["success"] = True
         result["message"] = f"{chosen['std_text']} x{box_qty} 담기 완료"
+        result["box_qty"] = box_qty
         return result
+
+    # ------ 장바구니 카운트 ------
+
+    async def _get_cart_count(self) -> int:
+        """지오영 장바구니 아이템 수를 읽는다."""
+        try:
+            page = self._page
+            # 장바구니 테이블 행 수
+            rows = page.locator('#section_cart_body tr')
+            count = await rows.count()
+            if count > 0:
+                return count
+            # 또는 배지
+            badge = page.locator('.cart-badge, .cart-count, #cartItemCount')
+            if await badge.count() > 0:
+                import re
+                text = (await badge.first.inner_text()).strip()
+                nums = re.sub(r'[^\d]', '', text)
+                return int(nums) if nums else 0
+        except Exception:
+            pass
+        return -1
 
     # ------ 주문확정 ------
 
     async def _confirm_order(self) -> None:
         await self._page.click('#section_cart_total_btn_order')
         await self._page.wait_for_timeout(3000)
+
+    # ------ 입고이력 검색 ------
+
+    async def search_history_async(self, drug_name: str,
+                                   lot_number: str = "",
+                                   headless: bool = True) -> list[dict]:
+        """지오영 /MyPage/Serial(일련번호)에서 입고이력을 검색한다.
+
+        메인 테이블: 출고일자[0], 전표번호[1], 창고명[2], 상품코드[3], 상품명[4],
+                     수량[5], 단가[6], 금액[7], 출고수집[8], 수집대상[9]
+        상세 테이블(행 클릭 후): NO.[0], 유효기한[1], LOT번호[2], 일련번호[3]
+        """
+        results = []
+        try:
+            self._progress(f"지오영 입고이력 검색: {drug_name}")
+            ok = await self.login_async(headless=headless)
+            if not ok:
+                self._progress("지오영 로그인 실패")
+                return results
+
+            page = self._page
+
+            # 일련번호 페이지
+            await page.goto(
+                "https://bpm.geoweb.kr/MyPage/Serial",
+                wait_until="domcontentloaded",
+                timeout=15000,
+            )
+            await page.wait_for_timeout(2000)
+
+            # 날짜 범위 5년
+            from datetime import datetime, timedelta
+            date_from = (datetime.now() - timedelta(days=365 * 5)).strftime("%Y-%m-%d")
+            date_to = datetime.now().strftime("%Y-%m-%d")
+
+            await page.fill("#dtpFrom", "")
+            await page.fill("#dtpFrom", date_from)
+            await page.fill("#dtpTo", "")
+            await page.fill("#dtpTo", date_to)
+
+            # 약품명 입력 + 검색
+            await page.fill("#txtitem", drug_name)
+            await page.click("button.btn_search")
+            await page.wait_for_timeout(4000)
+
+            # 메인 테이블 파싱
+            main_table = page.locator("table").first
+            rows = main_table.locator("tbody tr")
+            count = await rows.count()
+            self._progress(f"지오영 검색 결과: {count}건")
+
+            import re
+
+            # 검색어에서 키워드 추출 (예: "자누메트 50/1000" → ["자누메트", "50/1000"])
+            search_keywords = [k.strip() for k in drug_name.split() if k.strip()]
+
+            for i in range(min(count, 50)):
+                try:
+                    row = rows.nth(i)
+                    cells = row.locator("td")
+                    cell_count = await cells.count()
+                    if cell_count < 6:
+                        continue
+
+                    delivery_date = (await cells.nth(0).inner_text()).strip()
+                    drug = (await cells.nth(4).inner_text()).strip()
+                    qty_text = (await cells.nth(5).inner_text()).strip()
+
+                    if not drug or "없습니다" in drug or "조회" in drug:
+                        continue
+
+                    # 검색 키워드가 모두 포함된 행만 대상
+                    drug_lower = drug.lower()
+                    name_match = all(
+                        kw.lower() in drug_lower for kw in search_keywords
+                    )
+
+                    nums = re.sub(r'[^\d]', '', qty_text)
+                    result = {
+                        "drug_name": drug,
+                        "order_date": delivery_date,
+                        "qty": int(nums) if nums else 0,
+                        "lot_number": "",
+                        "expiry": "",
+                        "wholesaler_id": "geo",
+                        "wholesaler_name": "지오영",
+                        "source": "지오영",
+                        "matched": False,
+                    }
+
+                    # 키워드 매칭된 행만 클릭해서 LOT 확인
+                    if lot_number and name_match:
+                        try:
+                            await row.click()
+                            await page.wait_for_timeout(2000)
+
+                            # 모달 내 상세 테이블: NO., 유효기한, LOT번호, 일련번호
+                            modal = page.locator(".ui-dialog .popup_contents table")
+                            if await modal.count() > 0:
+                                d_rows = modal.locator("tbody tr")
+                                d_count = await d_rows.count()
+                                for di in range(min(d_count, 20)):
+                                    d_cells = d_rows.nth(di).locator("td")
+                                    if await d_cells.count() >= 3:
+                                        d_expiry = (await d_cells.nth(1).inner_text()).strip()
+                                        d_lot = (await d_cells.nth(2).inner_text()).strip()
+                                        if d_lot:
+                                            result["lot_number"] = d_lot
+                                            result["expiry"] = d_expiry
+                                            if lot_number.lower() in d_lot.lower():
+                                                result["matched"] = True
+                                            break
+
+                            # 모달 닫기
+                            close_btn = page.locator(
+                                '.ui-dialog button:has-text("닫기")'
+                            ).first
+                            if await close_btn.count() > 0:
+                                await close_btn.click()
+                            else:
+                                # X 버튼
+                                x_btn = page.locator(
+                                    '.ui-dialog .ui-dialog-titlebar-close'
+                                ).first
+                                if await x_btn.count() > 0:
+                                    await x_btn.click()
+                            await page.wait_for_timeout(500)
+                        except Exception:
+                            # 모달이 남아있으면 강제 닫기
+                            try:
+                                await page.keyboard.press("Escape")
+                                await page.wait_for_timeout(500)
+                            except Exception:
+                                pass
+
+                    results.append(result)
+                except Exception:
+                    continue
+
+        except Exception as e:
+            self._progress(f"지오영 이력 검색 오류: {e}")
+        finally:
+            await self._close()
+
+        return results
 
     # ------ 테스트 ------
 

@@ -1,0 +1,1010 @@
+{
+  "geo": {
+    "name": "지오영",
+    "login_url": "https://bpm.geoweb.kr/",
+    "main_url": "https://bpm.geoweb.kr/",
+    "all_links": [
+      {
+        "type": "link",
+        "href": "/",
+        "text": "영남 주식회사 지오영 부산",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "#",
+        "text": "fact_check 주문",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "link",
+        "href": "/",
+        "text": "의약품주문",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "link",
+        "href": "/Home/Event",
+        "text": "행사제품",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "/Home/Reorder",
+        "text": "재주문",
+        "onclick": "",
+        "selector": null,
+        "score": 2
+      },
+      {
+        "type": "link",
+        "href": "#",
+        "text": "pageview 조회",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "/MyPage",
+        "text": "주문내역",
+        "onclick": "",
+        "selector": null,
+        "score": 2
+      },
+      {
+        "type": "link",
+        "href": "/MyPage/SalesLedger",
+        "text": "매출원장",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "/MyPage/Tax",
+        "text": "세금계산서",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "/MyPage/Recall",
+        "text": "회수의약품",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "/MyPage/Serial",
+        "text": "일련번호",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "/MyPage/AlarmConfig",
+        "text": "알림제품",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "/MyPage/InsuranceFee",
+        "text": "보험수가 조회",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "#",
+        "text": "payments 결제",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "/Payment",
+        "text": "잔고결제",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "/Payment/Deposit",
+        "text": "입금내역 조회",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "link",
+        "href": "#",
+        "text": "percent 약가인하",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "/PriceCut",
+        "text": "약가인하 내역",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "link",
+        "href": "/PriceCut/Proposal",
+        "text": "약가인하 서류보상",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "https://nedrug.mfds.go.kr/pbp/CCBAF10",
+        "text": "article 식약처 공급중단·부족 보고대상 의약품 현황",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "javascript:jsf_com_OpenSmsPageByPage(1);",
+        "text": "SMS전송",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "/Extra/Notice",
+        "text": "공지사항",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "/Member/Logout",
+        "text": "로그아웃",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "javascript:jsf_com_openDeliveryTime();",
+        "text": "19:59 마감 전체 01 12:59 마감 전체 03",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "link",
+        "href": "http://939.co.kr/geonet",
+        "text": "원격지원 서비스 요청",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "javascript:jsf_com_zoomIn();",
+        "text": "화면확대",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "javascript:jsf_com_zoomOut();",
+        "text": "화면축소",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "javascript:jsf_com_zoomReset();",
+        "text": "기본설정",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "https://www.geo-young.com/",
+        "text": "회사소개",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "javascript:openPrivacyPopup();",
+        "text": "개인정보취급방침",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "#",
+        "text": "위로",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "menu",
+        "href": "/",
+        "text": "영남 주식회사 지오영 부산",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "menu",
+        "href": "#",
+        "text": "fact_check 주문",
+        "onclick": "",
+        "selector": "nav a:nth-of-type(2)",
+        "score": 1
+      },
+      {
+        "type": "menu",
+        "href": "/",
+        "text": "의약품주문",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "menu",
+        "href": "/Home/Event",
+        "text": "행사제품",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "menu",
+        "href": "/Home/Reorder",
+        "text": "재주문",
+        "onclick": "",
+        "selector": null,
+        "score": 2
+      },
+      {
+        "type": "menu",
+        "href": "#",
+        "text": "pageview 조회",
+        "onclick": "",
+        "selector": "nav a:nth-of-type(6)"
+      },
+      {
+        "type": "menu",
+        "href": "/MyPage",
+        "text": "주문내역",
+        "onclick": "",
+        "selector": null,
+        "score": 2
+      },
+      {
+        "type": "menu",
+        "href": "/MyPage/SalesLedger",
+        "text": "매출원장",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "menu",
+        "href": "/MyPage/Tax",
+        "text": "세금계산서",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "menu",
+        "href": "/MyPage/Recall",
+        "text": "회수의약품",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "menu",
+        "href": "/MyPage/Serial",
+        "text": "일련번호",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "menu",
+        "href": "/MyPage/AlarmConfig",
+        "text": "알림제품",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "menu",
+        "href": "/MyPage/InsuranceFee",
+        "text": "보험수가 조회",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "menu",
+        "href": "#",
+        "text": "payments 결제",
+        "onclick": "",
+        "selector": "nav a:nth-of-type(14)"
+      },
+      {
+        "type": "menu",
+        "href": "/Payment",
+        "text": "잔고결제",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "menu",
+        "href": "/Payment/Deposit",
+        "text": "입금내역 조회",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "menu",
+        "href": "#",
+        "text": "percent 약가인하",
+        "onclick": "",
+        "selector": "nav a:nth-of-type(17)"
+      },
+      {
+        "type": "menu",
+        "href": "/PriceCut",
+        "text": "약가인하 내역",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "menu",
+        "href": "/PriceCut/Proposal",
+        "text": "약가인하 서류보상",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "menu",
+        "href": "https://nedrug.mfds.go.kr/pbp/CCBAF10",
+        "text": "article 식약처 공급중단·부족 보고대상 의약품 현황",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "menu",
+        "href": "javascript:jsf_com_OpenSmsPageByPage(1);",
+        "text": "SMS전송",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "menu",
+        "href": "/Extra/Notice",
+        "text": "공지사항",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "menu",
+        "href": "/Member/Logout",
+        "text": "로그아웃",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "menu",
+        "href": "javascript:jsf_com_openDeliveryTime();",
+        "text": "12:59 마감 전체 03",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "menu",
+        "href": "http://939.co.kr/geonet",
+        "text": "원격지원 서비스 요청",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "menu",
+        "href": "javascript:jsf_com_zoomIn();",
+        "text": "화면확대",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "menu",
+        "href": "javascript:jsf_com_zoomOut();",
+        "text": "화면축소",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "menu",
+        "href": "javascript:jsf_com_zoomReset();",
+        "text": "기본설정",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "menu",
+        "href": "",
+        "text": "19:59 마감 전체 01",
+        "onclick": "",
+        "selector": "nav li:nth-of-type(15)"
+      },
+      {
+        "type": "menu",
+        "href": "",
+        "text": "19:59 마감 (금) 01",
+        "onclick": "",
+        "selector": "nav li:nth-of-type(17)"
+      },
+      {
+        "type": "menu",
+        "href": "",
+        "text": "알림등록",
+        "onclick": "AlarmAdd();",
+        "selector": "button[onclick]:nth-of-type(1)"
+      },
+      {
+        "type": "menu",
+        "href": "",
+        "text": "상세보기",
+        "onclick": "ViewDetail();",
+        "selector": "button[onclick]:nth-of-type(2)"
+      }
+    ],
+    "history_links": [
+      {
+        "type": "link",
+        "href": "/Home/Reorder",
+        "text": "재주문",
+        "onclick": "",
+        "selector": null,
+        "score": 2
+      },
+      {
+        "type": "link",
+        "href": "/MyPage",
+        "text": "주문내역",
+        "onclick": "",
+        "selector": null,
+        "score": 2
+      },
+      {
+        "type": "menu",
+        "href": "/Home/Reorder",
+        "text": "재주문",
+        "onclick": "",
+        "selector": null,
+        "score": 2
+      },
+      {
+        "type": "menu",
+        "href": "/MyPage",
+        "text": "주문내역",
+        "onclick": "",
+        "selector": null,
+        "score": 2
+      },
+      {
+        "type": "link",
+        "href": "#",
+        "text": "fact_check 주문",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "link",
+        "href": "/",
+        "text": "의약품주문",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "link",
+        "href": "/Payment/Deposit",
+        "text": "입금내역 조회",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "link",
+        "href": "/PriceCut",
+        "text": "약가인하 내역",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "link",
+        "href": "javascript:jsf_com_openDeliveryTime();",
+        "text": "19:59 마감 전체 01 12:59 마감 전체 03",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "menu",
+        "href": "#",
+        "text": "fact_check 주문",
+        "onclick": "",
+        "selector": "nav a:nth-of-type(2)",
+        "score": 1
+      },
+      {
+        "type": "menu",
+        "href": "/",
+        "text": "의약품주문",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "menu",
+        "href": "/Payment/Deposit",
+        "text": "입금내역 조회",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "menu",
+        "href": "/PriceCut",
+        "text": "약가인하 내역",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "menu",
+        "href": "javascript:jsf_com_openDeliveryTime();",
+        "text": "12:59 마감 전체 03",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      }
+    ]
+  },
+  "baekje": {
+    "name": "백제약품",
+    "login_url": "http://www.ibjp.kr/dist/login",
+    "main_url": "http://www.ibjp.kr/dist/comOrd",
+    "all_links": [
+      {
+        "type": "link",
+        "href": "",
+        "text": "주문",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "link",
+        "href": "/dist/comOrd",
+        "text": "통합주문",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "link",
+        "href": "/dist/freOrd",
+        "text": "다빈도",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "/dist/interest",
+        "text": "관심상품",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "/dist/dry",
+        "text": "건강기능식품",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "",
+        "text": "건강기능식품",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "",
+        "text": "OTC / 부외품",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "",
+        "text": "반품",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "link",
+        "href": "",
+        "text": "매출원장",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "",
+        "text": "결제",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "",
+        "text": "약가인하정보",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "",
+        "text": "마이페이지",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "",
+        "text": "우리약국 사상/감전",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "",
+        "text": "SMS 전송",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "",
+        "text": "관심상품",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "",
+        "text": "장바구니",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "/dist/comOrd",
+        "text": "주문 (0)",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "link",
+        "href": "/dist/return",
+        "text": "반품 (0)",
+        "onclick": "",
+        "selector": null,
+        "score": 2
+      },
+      {
+        "type": "link",
+        "href": "",
+        "text": "로그아웃",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "",
+        "text": "우리약국 사상/감전",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "",
+        "text": "SMS 전송",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "",
+        "text": "관심상품",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "",
+        "text": "장바구니",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "/dist/comOrd",
+        "text": "주문 (0)",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "link",
+        "href": "/dist/return",
+        "text": "반품 (0)",
+        "onclick": "",
+        "selector": null,
+        "score": 2
+      },
+      {
+        "type": "link",
+        "href": "",
+        "text": "로그아웃",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "javascript:void(0);",
+        "text": "레오파마 회수 관련 공문.jpg(644.55 KB)",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "javascript:void(0);",
+        "text": "회수확인서(프로토픽연고 0.1% 10g).docx(27.90 KB)",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "link",
+        "href": "javascript:void(0);",
+        "text": "회수확인서(프로토픽연고 0.1% 30g).docx(29.91 KB)",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "menu",
+        "href": "",
+        "text": "주문",
+        "onclick": "",
+        "selector": "[class*='menu'] a:nth-of-type(1)",
+        "score": 1
+      },
+      {
+        "type": "menu",
+        "href": "/dist/comOrd",
+        "text": "통합주문",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "menu",
+        "href": "/dist/freOrd",
+        "text": "다빈도",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "menu",
+        "href": "/dist/interest",
+        "text": "관심상품",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "menu",
+        "href": "/dist/dry",
+        "text": "건강기능식품",
+        "onclick": "",
+        "selector": null
+      },
+      {
+        "type": "menu",
+        "href": "",
+        "text": "OTC / 부외품",
+        "onclick": "",
+        "selector": "[class*='menu'] a:nth-of-type(7)"
+      },
+      {
+        "type": "menu",
+        "href": "",
+        "text": "반품",
+        "onclick": "",
+        "selector": "[class*='menu'] a:nth-of-type(8)",
+        "score": 1
+      },
+      {
+        "type": "menu",
+        "href": "",
+        "text": "매출원장",
+        "onclick": "",
+        "selector": "[class*='menu'] a:nth-of-type(9)"
+      },
+      {
+        "type": "menu",
+        "href": "",
+        "text": "결제",
+        "onclick": "",
+        "selector": "[class*='menu'] a:nth-of-type(10)"
+      },
+      {
+        "type": "menu",
+        "href": "",
+        "text": "약가인하정보",
+        "onclick": "",
+        "selector": "[class*='menu'] a:nth-of-type(11)"
+      },
+      {
+        "type": "menu",
+        "href": "",
+        "text": "마이페이지",
+        "onclick": "",
+        "selector": "[class*='menu'] a:nth-of-type(12)"
+      },
+      {
+        "type": "menu",
+        "href": "/dist/comOrd",
+        "text": "주문 (0)",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "menu",
+        "href": "/dist/return",
+        "text": "반품 (0)",
+        "onclick": "",
+        "selector": null,
+        "score": 2
+      },
+      {
+        "type": "menu",
+        "href": "",
+        "text": "SMS 전송",
+        "onclick": "",
+        "selector": "[class*='menu'] a:nth-of-type(15)"
+      },
+      {
+        "type": "menu",
+        "href": "",
+        "text": "장바구니",
+        "onclick": "",
+        "selector": "[class*='menu'] a:nth-of-type(17)"
+      },
+      {
+        "type": "menu",
+        "href": "",
+        "text": "로그아웃",
+        "onclick": "",
+        "selector": "[class*='menu'] a:nth-of-type(20)"
+      }
+    ],
+    "history_links": [
+      {
+        "type": "link",
+        "href": "/dist/return",
+        "text": "반품 (0)",
+        "onclick": "",
+        "selector": null,
+        "score": 2
+      },
+      {
+        "type": "link",
+        "href": "/dist/return",
+        "text": "반품 (0)",
+        "onclick": "",
+        "selector": null,
+        "score": 2
+      },
+      {
+        "type": "menu",
+        "href": "/dist/return",
+        "text": "반품 (0)",
+        "onclick": "",
+        "selector": null,
+        "score": 2
+      },
+      {
+        "type": "link",
+        "href": "",
+        "text": "주문",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "link",
+        "href": "/dist/comOrd",
+        "text": "통합주문",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "link",
+        "href": "",
+        "text": "반품",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "link",
+        "href": "/dist/comOrd",
+        "text": "주문 (0)",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "link",
+        "href": "/dist/comOrd",
+        "text": "주문 (0)",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "menu",
+        "href": "",
+        "text": "주문",
+        "onclick": "",
+        "selector": "[class*='menu'] a:nth-of-type(1)",
+        "score": 1
+      },
+      {
+        "type": "menu",
+        "href": "/dist/comOrd",
+        "text": "통합주문",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      },
+      {
+        "type": "menu",
+        "href": "",
+        "text": "반품",
+        "onclick": "",
+        "selector": "[class*='menu'] a:nth-of-type(8)",
+        "score": 1
+      },
+      {
+        "type": "menu",
+        "href": "/dist/comOrd",
+        "text": "주문 (0)",
+        "onclick": "",
+        "selector": null,
+        "score": 1
+      }
+    ]
+  }
+}

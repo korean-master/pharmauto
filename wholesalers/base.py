@@ -194,12 +194,48 @@ class WholesalerBase(ABC):
 
                 preferred = item.get("preferred_unit") or get_preferred_unit(code)
 
-                result = await self._add_item_to_cart(
-                    code, qty, idx, total, preferred_unit=preferred
-                )
+                # 장바구니 담기 전 카운트
+                cart_before = await self._get_cart_count()
+
+                try:
+                    result = await self._add_item_to_cart(
+                        code, qty, idx, total, preferred_unit=preferred
+                    )
+                except Exception as e:
+                    result = {
+                        "success": False,
+                        "insurance_code": code,
+                        "quantity": qty,
+                        "message": str(e),
+                        "drug_name": "",
+                    }
+
+                # 3단계 검증: 1) _add_item_to_cart 자체 판단
+                if result["success"]:
+                    # 2) 팝업/에러 메시지 감지
+                    fail_reason, is_oos = await self._detect_cart_failure()
+                    if fail_reason:
+                        result["success"] = False
+                        result["message"] = fail_reason
+                        if is_oos:
+                            result["out_of_stock"] = True
+
+                if result["success"]:
+                    # 3) 장바구니 카운트 변화 확인
+                    await self._page.wait_for_timeout(500)
+                    cart_after = await self._get_cart_count()
+                    if cart_before >= 0 and cart_after >= 0:
+                        if cart_after <= cart_before:
+                            result["success"] = False
+                            result["message"] = "장바구니에 추가되지 않음 (품절 가능)"
+                            result["out_of_stock"] = True
+
                 order_result["results"].append(result)
                 if not result["success"]:
                     order_result["failed_items"].append(item)
+                    self._progress(
+                        f"  [{code}] 실패: {result.get('message', '')} ({idx}/{total})"
+                    )
 
                 # 발견된 규격을 클라우드에 기여
                 if result.get("unit_options"):
@@ -209,19 +245,23 @@ class WholesalerBase(ABC):
             await self._screenshot(f"{prefix}_cart_final.png")
 
             success_count = sum(1 for r in order_result["results"] if r["success"])
+            fail_count = len(order_result["results"]) - success_count
             if success_count == 0:
-                order_result["message"] = "장바구니에 담긴 약품 없음"
-                self._progress("장바구니에 담긴 약품이 없습니다")
+                fail_reasons = [r.get("message", "") for r in order_result["results"] if not r["success"]]
+                reason = fail_reasons[0] if fail_reasons else "장바구니 담기 실패"
+                order_result["message"] = reason
+                self._progress(f"주문 실패: {reason}")
                 return order_result
 
             # 3. 주문확정
+            fail_note = f" (실패 {fail_count}건)" if fail_count else ""
             if dry_run:
                 self._progress(
-                    f"테스트 모드 - {success_count}건 장바구니 담기 완료 (주문확정 안함)"
+                    f"장바구니 {success_count}건 완료{fail_note}"
                 )
                 order_result["success"] = True
                 order_result["message"] = (
-                    f"테스트 완료 - {success_count}건 (주문확정 안함)"
+                    f"장바구니 {success_count}건 완료{fail_note}"
                 )
             else:
                 self._progress("주문확정 중...")
@@ -342,3 +382,150 @@ class WholesalerBase(ABC):
 
     def request_return(self, drug_name: str, lot_number: str, qty: int) -> dict:
         return {"success": False, "message": "미구현"}
+
+    # ────── 장바구니 카운트 확인 ──────
+
+    async def _get_cart_count(self) -> int:
+        """현재 장바구니에 담긴 아이템 수를 반환한다.
+
+        Returns:
+            아이템 수. 확인 불가하면 -1.
+        서브클래스에서 오버라이드하여 각 사이트에 맞게 구현.
+        """
+        if not self._page:
+            return -1
+
+        # 공통 패턴: 장바구니 배지/카운트 텍스트 탐색
+        page = self._page
+        cart_selectors = [
+            '.cart-count', '.badge', '#cartCount',
+            '[class*="cart"] .count', '[class*="cart"] .badge',
+        ]
+        for sel in cart_selectors:
+            try:
+                el = page.locator(sel).first
+                if await el.count() > 0 and await el.is_visible():
+                    text = (await el.inner_text()).strip()
+                    import re
+                    nums = re.sub(r'[^\d]', '', text)
+                    if nums:
+                        return int(nums)
+            except Exception:
+                continue
+
+        # 장바구니 테이블 행 수로 추정
+        try:
+            for sel in ['#cart-table tbody tr', '.cart-list tr',
+                        'table.cart tbody tr']:
+                rows = page.locator(sel)
+                if await rows.count() > 0:
+                    return await rows.count()
+        except Exception:
+            pass
+
+        return -1
+
+    # ────── 장바구니 실패 감지 (공통) ──────
+
+    # 품절(재고 없음)로 판단되는 키워드 — out_of_stock 플래그 설정
+    _STOCKOUT_KEYWORDS = [
+        "품절", "재고 부족", "재고부족", "재고가 없", "재고없",
+        "공급 불가", "공급불가",
+    ]
+
+    # 기타 실패 키워드 (품절은 아니지만 담기 실패)
+    _FAIL_KEYWORDS = [
+        *_STOCKOUT_KEYWORDS,
+        "주문 불가", "주문불가", "판매 중지", "판매중지",
+        "취급 불가", "취급불가",
+        "없습니다", "실패", "오류",
+    ]
+
+    async def _detect_cart_failure(self) -> tuple[str, bool]:
+        """장바구니 담기 직후 에러 팝업/메시지를 공통 감지한다.
+
+        Returns:
+            (실패 사유 문자열, 품절 여부). 실패 아니면 ("", False).
+        """
+        if not self._page:
+            return ""
+
+        page = self._page
+
+        # 1) 모달/다이얼로그 텍스트 확인
+        dialog_selectors = [
+            ".q-dialog",
+            ".modal",
+            ".layerpopup",
+            ".popup",
+            '[role="dialog"]',
+            ".alert",
+            ".toast",
+        ]
+        for sel in dialog_selectors:
+            try:
+                el = page.locator(sel).first
+                if await el.count() > 0 and await el.is_visible():
+                    text = (await el.inner_text()).strip()
+                    for kw in self._FAIL_KEYWORDS:
+                        if kw in text:
+                            # 팝업 닫기 시도
+                            close = el.locator(
+                                'button:has-text("확인"), '
+                                'button:has-text("닫기"), '
+                                'button:has-text("Close")'
+                            ).first
+                            if await close.count() > 0:
+                                try:
+                                    await close.click(timeout=2000)
+                                except Exception:
+                                    pass
+                            is_oos = kw in self._STOCKOUT_KEYWORDS
+                            return kw, is_oos
+            except Exception:
+                continue
+
+        # 2) 페이지 전체에서 눈에 보이는 에러 메시지 (빨간색 텍스트 등)
+        try:
+            error_els = page.locator(
+                '.error, .text-red, .text-danger, '
+                '[class*="error"], [class*="alert-danger"]'
+            )
+            count = await error_els.count()
+            for i in range(min(count, 3)):
+                el = error_els.nth(i)
+                if await el.is_visible():
+                    text = (await el.inner_text()).strip()
+                    for kw in self._FAIL_KEYWORDS:
+                        if kw in text:
+                            is_oos = kw in self._STOCKOUT_KEYWORDS
+                            return kw, is_oos
+        except Exception:
+            pass
+
+        return "", False
+
+    # ────── 입고이력 검색 ──────
+
+    async def search_history_async(self, drug_name: str,
+                                   lot_number: str = "",
+                                   headless: bool = True) -> list[dict]:
+        """도매상 사이트에서 입고(주문) 이력을 검색한다.
+
+        Args:
+            drug_name: 약품명 (필수)
+            lot_number: 로트번호/제조번호 (있으면 정확한 매칭)
+
+        Returns:
+            [{"drug_name", "order_date", "qty", "lot_number",
+              "wholesaler_id", "wholesaler_name", "source", "matched"}, ...]
+            matched=True면 로트번호까지 매칭된 확정 결과
+        """
+        return []
+
+    def search_history(self, drug_name: str, lot_number: str = "",
+                       headless: bool = True) -> list[dict]:
+        """search_history_async 동기 래퍼."""
+        return asyncio.run(
+            self.search_history_async(drug_name, lot_number, headless)
+        )

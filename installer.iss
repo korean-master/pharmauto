@@ -2,7 +2,7 @@
 ; 빌드: "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
 
 #define MyAppName "PharmAuto"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.3.0"
 #define MyAppPublisher "PharmAuto"
 #define MyAppExeName "PharmAuto.exe"
 

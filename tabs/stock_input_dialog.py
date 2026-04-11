@@ -54,7 +54,7 @@ class StockInputDialog(QDialog):
 
         line = QLabel()
         line.setFixedHeight(1)
-        line.setStyleSheet("background: #E5E8EB;")
+        line.setStyleSheet("background: #DFE1E6;")
         layout.addWidget(line)
 
         # 안내 문구
@@ -114,7 +114,7 @@ class StockInputDialog(QDialog):
         # 또는 직접 입력
         line2 = QLabel()
         line2.setFixedHeight(1)
-        line2.setStyleSheet("background: #E5E8EB;")
+        line2.setStyleSheet("background: #DFE1E6;")
         layout.addWidget(line2)
 
         direct_label = QLabel("또는 직접 입력")

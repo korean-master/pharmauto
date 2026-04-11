@@ -232,7 +232,7 @@ class DrugSetupDialog(QDialog):
 
         line = QLabel()
         line.setFixedHeight(1)
-        line.setStyleSheet("background: #E5E8EB;")
+        line.setStyleSheet("background: #DFE1E6;")
         layout.addWidget(line)
 
         # ── 주문 방식 ──
@@ -307,7 +307,7 @@ class DrugSetupDialog(QDialog):
         # 구분선
         line2 = QLabel()
         line2.setFixedHeight(1)
-        line2.setStyleSheet("background: #E5E8EB;")
+        line2.setStyleSheet("background: #DFE1E6;")
         layout.addWidget(line2)
 
         # ── 단위 ──
@@ -462,7 +462,7 @@ class DrugSetupDialog(QDialog):
         if hasattr(self, '_spinner'):
             self._spinner.hide_spinner()
         self._fetch_result_label.setText(f"조회 실패: {msg}")
-        self._fetch_result_label.setStyleSheet(f"color: #F45452; font-size: 12px;")
+        self._fetch_result_label.setStyleSheet(f"color: #EF4444; font-size: 12px;")
 
     def _show_fetch_result(self, units: list[int]):
         drug_unit = self._unit_type_combo.currentText()

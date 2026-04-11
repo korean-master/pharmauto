@@ -125,21 +125,33 @@ class GenericWholesaler(WholesalerBase):
     # ────── 자동 탐지: 검색 ──────
 
     async def _detect_search(self) -> dict:
-        """약품 검색 관련 셀렉터를 자동 탐지한다."""
+        """약품 검색 관련 셀렉터를 자동 탐지한다.
+
+        1단계: 알려진 패턴으로 탐지
+        2단계: 조회/검색 버튼 주변 input 탐지 (폴백)
+        3단계: label 텍스트 기반 탐지 (폴백)
+        """
         page = self._page
         selectors = {}
 
-        # 검색 입력 필드
+        # ── 1단계: 알려진 패턴 ──
         search_candidates = [
             'input#txt_product',
             'input#P_SRH_KEY',
+            'input#tx_physic',
+            'input#srchTxt',
+            'input#searchKeyword',
+            'input#prodNm',
             'input[placeholder*="보험코드"]',
             'input[placeholder*="품목명"]',
             'input[placeholder*="약품"]',
             'input[placeholder*="상품"]',
             'input[placeholder*="검색"]',
+            'input[placeholder*="KD코드"]',
+            'input[placeholder*="제품명"]',
             'input.search-input', 'input.product-input',
             'input[name="searchWord"]', 'input[name="keyword"]',
+            'input[name="tx_physic"]', 'input[name="srchText"]',
         ]
         for sel in search_candidates:
             el = await page.query_selector(sel)
@@ -148,21 +160,229 @@ class GenericWholesaler(WholesalerBase):
                 self._progress(f"  검색 필드 탐지: {sel}")
                 break
 
-        # 검색 버튼 — 아이콘 버튼(텍스트 없음)을 우선 탐지
-        btn_candidates = [
-            'button.btn_search', 'button.search-btn',
-            'button[onclick*="Srh"]', 'button[onclick*="search"]',
-            'button:has-text("조회")',
-            'input[type="submit"]',
-        ]
-        for sel in btn_candidates:
-            el = await page.query_selector(sel)
-            if el and await el.is_visible():
-                selectors["search_btn"] = sel
-                self._progress(f"  검색 버튼 탐지: {sel}")
-                break
+        # ── 2단계: 조회/검색 버튼 주변 input 탐지 (1단계 실패 시) ──
+        if not selectors.get("search_input"):
+            btn_labels = [
+                'input[type="submit"][value*="조회"]',
+                'input[type="button"][value*="조회"]',
+                'button:has-text("조회")',
+                'button:has-text("검색")',
+                'a:has-text("조회")',
+            ]
+            for btn_sel in btn_labels:
+                btn = await page.query_selector(btn_sel)
+                if not btn or not await btn.is_visible():
+                    continue
+                try:
+                    # 같은 form/table/div 안의 텍스트 input 탐색
+                    container = await btn.evaluate_handle(
+                        'el => el.closest("form") || el.closest("table") || el.parentElement'
+                    )
+                    inputs = await container.query_selector_all(
+                        'input[type="text"], input:not([type]), input[type="search"]'
+                    )
+                    for inp in inputs:
+                        if not await inp.is_visible():
+                            continue
+                        inp_id = await inp.get_attribute("id") or ""
+                        inp_name = await inp.get_attribute("name") or ""
+                        if inp_id:
+                            sel = f"#{inp_id}"
+                        elif inp_name:
+                            sel = f'input[name="{inp_name}"]'
+                        else:
+                            sel = 'input[type="text"]'
+                        selectors["search_input"] = sel
+                        selectors["search_btn"] = btn_sel
+                        self._progress(f"  검색 필드 탐지(버튼 근처): {sel}")
+                        break
+                except Exception:
+                    pass
+                if selectors.get("search_input"):
+                    break
+
+        # ── 3단계: label 텍스트 기반 input 탐지 (여전히 없을 때) ──
+        if not selectors.get("search_input"):
+            for label_text in ["제품명", "품목명", "약품명", "KD코드", "검색어", "보험코드"]:
+                try:
+                    label = await page.query_selector(
+                        f'label:has-text("{label_text}"), td:has-text("{label_text}")'
+                    )
+                    if not label:
+                        continue
+                    for_attr = await label.get_attribute("for") or ""
+                    if for_attr:
+                        inp = await page.query_selector(f"#{for_attr}")
+                        if inp and await inp.is_visible():
+                            selectors["search_input"] = f"#{for_attr}"
+                            self._progress(f"  검색 필드 탐지(label): #{for_attr}")
+                            break
+                    # label 다음 sibling input 탐색
+                    sibling_inp = await label.evaluate_handle(
+                        'el => el.nextElementSibling'
+                    )
+                    if sibling_inp:
+                        tag = await sibling_inp.evaluate('el => el.tagName')
+                        if tag and tag.upper() == "INPUT":
+                            inp_id = await sibling_inp.get_attribute("id") or ""
+                            inp_name = await sibling_inp.get_attribute("name") or ""
+                            sel = f"#{inp_id}" if inp_id else f'input[name="{inp_name}"]' if inp_name else None
+                            if sel:
+                                selectors["search_input"] = sel
+                                self._progress(f"  검색 필드 탐지(label sibling): {sel}")
+                                break
+                except Exception:
+                    continue
+
+        # ── 검색 버튼 탐지 ──
+        if not selectors.get("search_btn"):
+            btn_candidates = [
+                '#btn_search', '#btnSearch', '#btn_search2', '#searchBtn',
+                'button.btn_search', 'button.search-btn',
+                'button[onclick*="Srh"]', 'button[onclick*="search"]',
+                'input[type="submit"][value*="조회"]',
+                'input[type="button"][value*="조회"]',
+                'input[type="submit"]',
+                'img[alt*="조회"]', 'img[alt*="검색"]', 'img[src*="search"]',
+                'button:has-text("조회")',
+                'button:has-text("검색")',
+                'a:has(img[alt*="조회"])', 'a:has(img[alt*="검색"])',
+                'a:has-text("조회")', # 최후의 수단
+            ]
+            for sel in btn_candidates:
+                el = await page.query_selector(sel)
+                if el and await el.is_visible():
+                    selectors["search_btn"] = sel
+                    self._progress(f"  검색 버튼 탐지: {sel}")
+                    break
 
         return selectors
+
+    # ────── 자동 탐지: 주문 가능 페이지 탐색 ──────
+
+    async def _is_orderable_page(self) -> bool:
+        """현재 페이지가 약품 주문/장바구니 담기가 가능한 페이지인지 판단한다.
+
+        기준:
+        - 검색 input이 있거나
+        - 장바구니/담기/추가 버튼이 있거나
+        - 제품 테이블 + 수량 input이 있으면 True
+        """
+        page = self._page
+
+        # 검색 input 있으면 OK
+        search = await self._detect_search()
+        if search.get("search_input"):
+            return True
+
+        # 장바구니/담기 버튼 있으면 OK
+        cart_btn_sels = [
+            'button:has-text("담기")',
+            'button:has-text("추가")',
+            'button:has-text("장바구니")',
+            'input[type="button"][value*="담기"]',
+            'input[type="button"][value*="추가"]',
+            'a:has-text("담기")',
+            'a:has-text("추가")',
+        ]
+        for sel in cart_btn_sels:
+            el = await page.query_selector(sel)
+            if el and await el.is_visible():
+                return True
+
+        # 테이블 + 수량 input 조합
+        rows = await page.query_selector_all('table tbody tr')
+        if rows:
+            qty_inp = await page.query_selector(
+                'input[type="number"], input[name*="qty"], input[name*="cnt"]'
+            )
+            if qty_inp:
+                return True
+
+        return False
+
+    async def _find_order_page(self) -> dict:
+        """로그인 후 실제 약품 주문이 가능한 페이지를 전체 메뉴 탐색으로 자동 발견한다.
+
+        - 모든 nav 링크 시도 (키워드 필터 없음)
+        - 각 페이지에서 search_input OR 장바구니 버튼 기준으로 판단
+        - order_url + search 셀렉터를 반환
+
+        Returns:
+            {"order_url": str, "search": dict} 또는 빈 dict
+        """
+        page = self._page
+        current_url = page.url
+        from urllib.parse import urljoin
+
+        self._progress("주문 페이지 전체 메뉴 탐색 중...")
+
+        # ── 1단계: 현재 페이지가 이미 주문 가능한지 확인 ──
+        if await self._is_orderable_page():
+            search = await self._detect_search()
+            self._progress(f"  ✅ 현재 페이지가 주문 가능: {current_url}")
+            return {"order_url": current_url, "search": search}
+
+        # ── 2단계: 모든 링크 수집 (키워드 필터 없음) ──
+        try:
+            links = await page.query_selector_all("a")
+            all_links = []
+            seen_hrefs = set()
+
+            for link in links:
+                try:
+                    text = (await link.inner_text()).strip().replace("\n", " ")[:40]
+                    href = await link.get_attribute("href") or ""
+                    if not href or href in ("#", "javascript:void(0)", "") or href in seen_hrefs:
+                        continue
+                    if href.startswith("javascript:"):
+                        continue
+                    seen_hrefs.add(href)
+                    all_links.append({"text": text, "href": href})
+                except Exception:
+                    continue
+
+            self._progress(f"  전체 링크 {len(all_links)}개 발견 → 순차 탐색")
+        except Exception as e:
+            self._progress(f"  링크 수집 오류: {e}")
+            return {}
+
+        # ── 3단계: 모든 링크 방문 → 주문 가능 판단 ──
+        for cand in all_links[:15]:  # 최대 15개 링크 시도
+            href = cand["href"]
+            target = href if href.startswith("http") else urljoin(current_url, href)
+
+            # 현재 URL과 같으면 스킵
+            if target == current_url:
+                continue
+
+            self._progress(f"  [{cand['text']}] 시도: {target}")
+            try:
+                await page.goto(target, wait_until="domcontentloaded", timeout=10000)
+                await page.wait_for_timeout(2000)
+            except Exception:
+                continue
+
+            if await self._is_orderable_page():
+                search = await self._detect_search()
+                self._progress(f"  ✅ 주문 페이지 발견: {target}")
+                # 원래 페이지로 복귀
+                try:
+                    await page.goto(current_url, wait_until="domcontentloaded", timeout=8000)
+                    await page.wait_for_timeout(1000)
+                except Exception:
+                    pass
+                return {"order_url": target, "search": search}
+
+        # ── 4단계: 복귀 후 실패 반환 ──
+        try:
+            await page.goto(current_url, wait_until="domcontentloaded", timeout=8000)
+            await page.wait_for_timeout(1000)
+        except Exception:
+            pass
+
+        self._progress("  전체 메뉴 탐색 실패 — 주문 페이지 찾지 못함")
+        return {}
 
     # ────── 자동 탐지: 결과 테이블 ──────
 
@@ -275,15 +495,31 @@ class GenericWholesaler(WholesalerBase):
             if "qty_input" in selectors:
                 break
 
-        # 4. 담기/추가 버튼 — 행 내부 먼저
+        # 4. 행 체크박스 탐지 (페이지 레벨 담기 버튼일 때 필요)
+        chk_candidates = [
+            'input[type="checkbox"]',
+            'input[name^="chk"]', 'input[name^="check"]',
+            'input[id^="chk"]', 'input[id^="check"]',
+        ]
+        for sel in chk_candidates:
+            el = await first_row.query_selector(sel)
+            if el:
+                selectors["row_checkbox"] = sel
+                self._progress(f"  행 체크박스: {sel}")
+                break
+
+        # 5. 담기/추가 버튼 — 행 내부 먼저  (※ 행 체크박스가 있으면 페이지 레벨 버튼과 함께 사용)
         cart_candidates = [
+            '#btn_saveBag', '#btn_cart', '#btnCart', '#addCart',
+            'button.btn_cart', '.btn-cart',
+            'img[alt*="담기"]', 'img[alt*="장바구니"]',
             'button:has-text("추가")',
             'button:has-text("담기")',
             'button:has-text("장바구니")',
-            'a:has-text("추가")',
-            'a:has-text("담기")',
             'input[type="button"][value*="추가"]',
             'input[type="button"][value*="담기"]',
+            'a:has(img[alt*="담기"])',
+            'a:has-text("장바구니 담기")',
         ]
         for sel in cart_candidates:
             el = await first_row.query_selector(sel)
@@ -303,7 +539,7 @@ class GenericWholesaler(WholesalerBase):
                     self._progress(f"  담기 버튼 (페이지): {sel}")
                     break
 
-        # 5. 가격 컬럼이 있으면 기록
+        # 6. 가격 컬럼이 있으면 기록
         if "price_col_idx" in selectors:
             self._progress(f"  가격 컬럼: {selectors['price_col_idx']}번째")
 
@@ -333,6 +569,149 @@ class GenericWholesaler(WholesalerBase):
                 break
 
         return selectors
+
+    # ────── 자동 탐지: 이력/반품 페이지 ──────
+
+    _HISTORY_KEYWORDS = [
+        "주문", "이력", "거래", "입고", "매입", "내역",
+        "반품", "출고", "납품", "매출", "원장", "일련",
+    ]
+    _HISTORY_TABLE_KEYWORDS = [
+        "제조번호", "로트", "lot", "유효기한", "유효", "만료",
+        "주문일", "입고일", "출고일", "배송일",
+    ]
+
+    async def _detect_history_page(self) -> dict | None:
+        """로그인 상태에서 이력/반품 관련 페이지를 탐색한다."""
+        page = self._page
+        current_url = page.url
+
+        try:
+            # 1) 메뉴에서 이력 관련 링크 찾기
+            links = await page.query_selector_all("a")
+            candidates = []
+            seen = set()
+
+            for el in links:
+                try:
+                    href = await el.get_attribute("href") or ""
+                    text = (await el.inner_text()).strip().replace("\n", " ")[:60]
+                    if not text or text in seen or not href or href == "#":
+                        continue
+                    seen.add(text)
+
+                    score = sum(1 for kw in self._HISTORY_KEYWORDS
+                                if kw in text.lower() or kw in href.lower())
+                    if score > 0:
+                        candidates.append({"text": text, "href": href, "score": score})
+                except Exception:
+                    continue
+
+            if not candidates:
+                self._progress("  이력 관련 메뉴 없음")
+                return None
+
+            candidates.sort(key=lambda x: x["score"], reverse=True)
+            self._progress(f"  이력 후보 {len(candidates)}개: {candidates[0]['text']}")
+
+            # 2) 상위 후보 페이지 방문 → 테이블 분석
+            from urllib.parse import urljoin
+
+            for cand in candidates[:3]:
+                href = cand["href"]
+                target = urljoin(current_url, href) if not href.startswith("http") else href
+
+                try:
+                    await page.goto(target, wait_until="domcontentloaded", timeout=10000)
+                    await page.wait_for_timeout(2000)
+                except Exception:
+                    continue
+
+                # 테이블 헤더에서 제조번호/유효기한 관련 컬럼 찾기
+                tables = await page.query_selector_all("table")
+                for ti, table in enumerate(tables):
+                    headers = await table.query_selector_all("th")
+                    h_texts = []
+                    for h in headers:
+                        h_texts.append((await h.inner_text()).strip().lower())
+
+                    if not h_texts:
+                        continue
+
+                    # 이력 관련 헤더가 있는지 확인
+                    h_joined = " ".join(h_texts)
+                    lot_score = sum(1 for kw in self._HISTORY_TABLE_KEYWORDS
+                                    if kw in h_joined)
+
+                    if lot_score >= 2:
+                        self._progress(f"  이력 테이블 발견: {cand['text']} (table[{ti}])")
+
+                        # 컬럼 매핑
+                        col_map = {}
+                        for idx, ht in enumerate(h_texts):
+                            if any(k in ht for k in ["제품", "상품", "품명", "약품"]):
+                                col_map["drug_name"] = idx
+                            elif any(k in ht for k in ["주문일", "입고일", "출고일", "배송일", "날짜"]):
+                                col_map["date"] = idx
+                            elif any(k in ht for k in ["수량", "납입"]):
+                                col_map["qty"] = idx
+                            elif any(k in ht for k in ["제조번호", "로트", "lot"]):
+                                col_map["lot_number"] = idx
+                            elif any(k in ht for k in ["유효기한", "유효", "만료"]):
+                                col_map["expiry"] = idx
+
+                        # 검색 필드 탐색
+                        search_fields = {}
+                        search_inputs = await page.query_selector_all("input:visible")
+                        for inp in search_inputs:
+                            ph = (await inp.get_attribute("placeholder") or "").lower()
+                            inp_id = await inp.get_attribute("id") or ""
+                            if any(k in ph for k in ["품목", "약품", "상품", "검색", "제품"]):
+                                search_fields["keyword"] = f"#{inp_id}" if inp_id else f'input[placeholder*="{ph[:10]}"]'
+                            elif any(k in ph for k in ["제조번호", "로트", "lot"]):
+                                search_fields["lot_number"] = f"#{inp_id}" if inp_id else f'input[placeholder*="{ph[:10]}"]'
+
+                        # 검색/조회 버튼
+                        for sel in ['button:has-text("검색")', 'button:has-text("조회")',
+                                    "button.btn_search", "button.lookup-btn"]:
+                            btn = await page.query_selector(sel)
+                            if btn and await btn.is_visible():
+                                search_fields["search_btn"] = sel
+                                break
+
+                        config = {
+                            "history_url": href,
+                            "history_page_name": cand["text"],
+                            "search": search_fields,
+                            "table": {
+                                "index": ti,
+                                "columns": col_map,
+                                "headers": [h.strip() for h in h_texts],
+                            },
+                            "auto_detected": True,
+                        }
+
+                        # 원래 페이지로 복귀
+                        try:
+                            await page.goto(current_url, wait_until="domcontentloaded",
+                                            timeout=10000)
+                            await page.wait_for_timeout(1000)
+                        except Exception:
+                            pass
+
+                        return config
+
+            # 원래 페이지로 복귀
+            try:
+                await page.goto(current_url, wait_until="domcontentloaded",
+                                timeout=10000)
+            except Exception:
+                pass
+
+        except Exception as e:
+            self._progress(f"  이력 페이지 탐색 오류: {e}")
+
+        return None
 
     # ────── 전체 사이트 분석 ──────
 
@@ -386,21 +765,76 @@ class GenericWholesaler(WholesalerBase):
             search_sel = await self._detect_search()
             all_selectors["search"] = search_sel
 
-            if search_sel.get("search_input"):
-                await page.fill(search_sel["search_input"], test_code)
-                if search_sel.get("search_btn"):
-                    await page.click(search_sel["search_btn"])
-                await page.wait_for_timeout(3000)
-                await self._screenshot(f"generic_{self._wid}_03_search_result.png")
+            # 3-1. 현재 페이지에 검색창 없으면 → 주문 페이지 자동 탐색
+            if not search_sel.get("search_input"):
+                self._progress("현재 페이지 검색창 없음 → 주문 페이지 메뉴 탐색 중...")
+                order_info = await self._find_order_page()
+                if order_info.get("search", {}).get("search_input"):
+                    all_selectors["order_url"] = order_info["order_url"]
+                    search_sel = order_info["search"]
+                    all_selectors["search"] = search_sel
+                    self._progress(f"주문 페이지 발견: {order_info['order_url']}")
 
-                # 결과 테이블 분석
-                table_sel = await self._detect_result_table(test_code)
+            if search_sel.get("search_input"):
+                # 약품명으로 검색 폴백 기능 추가
+                search_terms = []
+                try:
+                    from core.drug_api import get_drug_name
+                    from core.inventory import load_inventory
+                    import re as _re
+                    dname = get_drug_name(test_code)
+                    if dname == test_code:
+                        dname = load_inventory().get(test_code, {}).get("drug_name", test_code)
+                    short_name = _re.split(
+                        r'(정|캡슐|캡|시럽|액|산|환|주|크림|연고|점안|점이|패치|필름|과립'
+                        r'|밀리|미리|그램|mg|ML|ml|\d|[()\s])',
+                        dname, flags=_re.IGNORECASE
+                    )[0].strip()
+                    if short_name and short_name != test_code and len(short_name) >= 2:
+                        search_terms.append(short_name)
+                except Exception:
+                    pass
+                search_terms.append(test_code)
+
+                self._progress(f"분석용 검색 시도: {search_terms}")
+                table_sel = {}
+
+                for term in search_terms:
+                    self._progress(f"  [{term}] 검색 조회 중...")
+                    await page.fill(search_sel["search_input"], '')
+                    await page.wait_for_timeout(300)
+                    await page.fill(search_sel["search_input"], term)
+
+                    searched = False
+                    if search_sel.get("search_btn"):
+                        try:
+                            await page.click(search_sel["search_btn"])
+                            searched = True
+                        except Exception:
+                            pass
+                    if not searched:
+                        await page.press(search_sel["search_input"], "Enter")
+                    await page.wait_for_timeout(3000)
+
+                    # 결과 테이블 분석
+                    table_sel = await self._detect_result_table(test_code)
+                    # 테이블 행이 탐지되었으면 검색 성공으로 간주
+                    if table_sel and table_sel.get("result_rows"):
+                        await self._screenshot(f"generic_{self._wid}_03_search_result.png")
+                        break
+
                 all_selectors["table"] = table_sel
 
             # 4. 주문확정 버튼 분석
             self._progress("4/4 주문확정 버튼 분석 중...")
             confirm_sel = await self._detect_confirm()
             all_selectors["confirm"] = confirm_sel
+
+            # 5. 이력/반품 페이지 탐색
+            self._progress("5/5 이력/반품 페이지 탐색 중...")
+            history_config = await self._detect_history_page()
+            if history_config:
+                all_selectors["history"] = history_config
 
             # 분석 완료 여부 판정
             required = [
@@ -419,6 +853,20 @@ class GenericWholesaler(WholesalerBase):
             await self._close()
 
         self._save_selectors(all_selectors)
+
+        # 이력 검색 설정 서버 업로드
+        if all_selectors.get("history"):
+            try:
+                from core.history_config import save_config
+                h_cfg = all_selectors["history"]
+                h_cfg["name"] = self.name
+                h_cfg["base_url"] = self.url
+                h_cfg["login"] = all_selectors.get("login", {})
+                save_config(self._wid, h_cfg, upload=True)
+                self._progress("이력 검색 설정 서버 업로드 완료")
+            except Exception:
+                pass
+
         return all_selectors
 
     # ────── WholesalerBase 구현 ──────
@@ -491,16 +939,349 @@ class GenericWholesaler(WholesalerBase):
             self._progress("로그인 성공")
             await self._screenshot(f"generic_{self._wid}_login_ok.png")
 
-            # 검색 셀렉터가 없으면 탐지
+            # ── Step 1: 저장된 order_url이 있으면 해당 페이지로 이동 ──
+            order_url = self._selectors.get("order_url", "")
+            if order_url and order_url != page.url:
+                self._progress(f"주문 페이지로 이동: {order_url}")
+                try:
+                    await page.goto(order_url, wait_until="domcontentloaded", timeout=10000)
+                    await page.wait_for_timeout(2000)
+                except Exception as e:
+                    self._progress(f"주문 페이지 이동 실패: {e} → order_url 초기화")
+                    self._selectors.pop("order_url", None)
+                    self._save_selectors(self._selectors)
+
+            # ── Step 2: 검색 셀렉터 탐지 (현재 페이지 기준) ──
             if not self._selectors.get("search"):
                 search_sel = await self._detect_search()
                 self._selectors["search"] = search_sel
                 self._save_selectors(self._selectors)
+
+            # ── Step 3: 여전히 검색창 없으면 → 주문 페이지 메뉴 자동 탐색 ──
+            if not self._selectors.get("search", {}).get("search_input"):
+                self._progress("검색창 없음 → 주문 페이지 메뉴 탐색 중...")
+                order_info = await self._find_order_page()
+                if order_info.get("search", {}).get("search_input"):
+                    self._selectors["order_url"] = order_info["order_url"]
+                    self._selectors["search"] = order_info["search"]
+                    self._selectors["confidence"] = "provisional"
+                    self._save_selectors(self._selectors)
+                    self._progress(f"주문 페이지 탐색 성공 → {order_info['order_url']}")
+
+            # ── Step 4: 그래도 없으면 → Claude AI DOM 분석 (최후 수단) ──
+            if not self._selectors.get("search", {}).get("search_input"):
+                self._progress("메뉴 탐색 실패 → Claude AI 분석 시도 중...")
+                try:
+                    from core.ai_analyzer import analyze_selectors, is_available
+                    if is_available():
+                        ai_result = await analyze_selectors(
+                            page, site_url=self.url, wid=self._wid
+                        )
+                        if ai_result:
+                            self._selectors.setdefault("search", {}).update(
+                                {k: v for k, v in ai_result.items()
+                                 if k in ("search_input", "search_btn")}
+                            )
+                            if ai_result.get("result_rows"):
+                                self._selectors.setdefault("table", {})["result_rows"] = ai_result["result_rows"]
+                            if ai_result.get("cart_btn"):
+                                self._selectors.setdefault("table", {})["cart_btn"] = ai_result["cart_btn"]
+                            if ai_result.get("qty_input"):
+                                self._selectors.setdefault("table", {})["qty_input"] = ai_result["qty_input"]
+                            self._selectors["confidence"] = "provisional"
+                            self._save_selectors(self._selectors)
+                            self._progress("Claude AI 분석 완료 → 셀렉터 임시 저장")
+                    else:
+                        self._progress("Claude API 키 없음 — settings.json에 claude_api_key 추가 필요")
+                except Exception as e:
+                    self._progress(f"Claude AI 분석 오류: {e}")
         else:
             self._progress("로그인 실패")
             await self._screenshot(f"generic_{self._wid}_login_fail.png")
 
         return login_success
+
+    # ────── test_connection 오버라이드 ──────
+
+    async def test_connection(self, headless: bool = True) -> dict:
+        """Generic 도매상 전용 연동 테스트.
+
+        base.py의 test_connection과 다른 점:
+        - 하드코딩 테스트 코드가 해당 도매상에 없을 수 있음
+        - 1단계: 표준 테스트 코드로 검색 시도
+        - 2단계: 전부 실패하면 빈 검색으로 재고 내 임의 약품을 꺼내 장바구니 기능 검증
+        → 이 방식은 "장바구니 담기 기능이 작동하는가"를 검증하며,
+          특정 약품 코드 존재 여부에 의존하지 않는다.
+        """
+        TEST_CODES = ["645601261", "643501890", "646201260"]
+
+        try:
+            # 1. 로그인
+            self._progress("연동 테스트: 로그인 중...")
+            if not await self.login_async(headless=headless):
+                return {"success": False, "stage": "login", "message": "로그인 실패"}
+
+            page = self._page
+            search = self._selectors.get("search", {})
+            table = self._selectors.get("table", {})
+            search_input = search.get("search_input")
+            search_btn = search.get("search_btn")
+
+            if not search_input:
+                return {"success": False, "stage": "cart",
+                        "message": "검색 셀렉터 없음 - 사이트 분석 필요"}
+
+            # 로그인 직후 URL 저장 (step 2 실패 시 페이지 복구용)
+            order_page_url = page.url
+
+            # 2. 표준 테스트 코드로 장바구니 시도
+            self._progress("연동 테스트: 표준 코드로 장바구니 테스트...")
+            for code in TEST_CODES:
+                try:
+                    r = await self._add_item_to_cart(code, 1, 1, 1)
+                    if r.get("success"):
+                        self._progress(f"연동 테스트: 성공 ({r.get('drug_name', code)})")
+                        try:
+                            await self._clear_cart()
+                        except Exception:
+                            pass
+                        return {"success": True, "stage": "done", "message": "연동 정상"}
+                except Exception:
+                    continue
+
+            # 3. 표준 코드 모두 실패 → 페이지 복구 후 광범위 검색으로 장바구니 테스트
+            self._progress("연동 테스트: 표준 코드 없음 → 페이지 복구 후 광범위 검색...")
+            try:
+                # step 2의 반복 검색으로 페이지 상태가 꼬일 수 있으므로 주문 페이지 재접속
+                await page.goto(order_page_url, wait_until="domcontentloaded")
+                await page.wait_for_timeout(2000)
+
+                # 검색어 시도 목록 (1글자는 일부 사이트에서 안 될 수 있으므로 여러 개)
+                search_words = ["정", "타이레놀", "아스피린"]
+                valid_rows = []
+
+                for word in search_words:
+                    await page.fill(search_input, "")
+                    await page.wait_for_timeout(200)
+                    await page.fill(search_input, word)
+                    await page.wait_for_timeout(200)
+
+                    # 버튼 클릭 또는 Enter (둘 중 하나만 — 더블 포스트백 방지)
+                    searched = False
+                    if search_btn:
+                        try:
+                            await page.click(search_btn)
+                            searched = True
+                        except Exception:
+                            pass
+                    if not searched:
+                        await page.press(search_input, "Enter")
+
+                    await page.wait_for_timeout(3000)
+
+                    row_sel = table.get("result_rows", "table tbody tr")
+                    rows = await page.query_selector_all(row_sel)
+
+                    for r in rows:
+                        tds = await r.query_selector_all("td")
+                        filled = 0
+                        for td in tds:
+                            if (await td.inner_text()).strip():
+                                filled += 1
+                        if filled >= 3:
+                            valid_rows.append(r)
+
+                    if valid_rows:
+                        self._progress(f"  [{word}] 검색 성공 ({len(valid_rows)}행)")
+                        break
+                    self._progress(f"  [{word}] 결과 없음")
+
+                if not valid_rows:
+                    return {"success": False, "stage": "cart",
+                            "message": "재고 없음 - 검색 결과 0건"}
+
+                self._progress(f"연동 테스트: 재고 {len(valid_rows)}건 발견 → 첫 번째 항목으로 장바구니 테스트")
+
+                # 첫 번째 행으로 수량 입력 + 담기 버튼 실행
+                first_row = valid_rows[0]
+                cells = await first_row.query_selector_all("td")
+                drug_name = ""
+                name_col = table.get("name_col_idx")
+                if name_col is not None and name_col < len(cells):
+                    drug_name = (await cells[name_col].inner_text()).strip()
+
+                # ── 수량 입력 ──
+                qty_el = None
+                try:
+                    # 1) 저장된 qty_input 셀렉터
+                    qty_sel = table.get("qty_input")
+                    if qty_sel:
+                        qty_el = await first_row.query_selector(qty_sel)
+                    # 2) qty_col_idx 컬럼 안의 input
+                    if not qty_el:
+                        qty_col = table.get("qty_col_idx")
+                        if qty_col is not None and qty_col < len(cells):
+                            qty_el = await cells[qty_col].query_selector('input')
+                    # 3) 폴백 — 행 내 input[type="text"] 중 name에 qty/cnt 포함
+                    if not qty_el:
+                        for sel in ['input[name*="qty"]', 'input[name*="cnt"]',
+                                    'input[type="text"][size]', 'input[type="number"]']:
+                            qty_el = await first_row.query_selector(sel)
+                            if qty_el:
+                                break
+                    if qty_el:
+                        await qty_el.click()
+                        await qty_el.select_text()
+                        await qty_el.type("1")
+                        await page.wait_for_timeout(300)
+                        self._progress("  수량 1 입력 완료")
+                    else:
+                        self._progress("  수량 입력 필드 없음 (무시)")
+                except Exception as e:
+                    self._progress(f"  수량 입력 실패 (무시): {e}")
+
+                # ── 행 체크박스 체크 (페이지 레벨 담기 버튼일 때 필수) ──
+                cart_in_row = table.get("cart_btn_in_row", False)
+                if not cart_in_row:
+                    chk_sel = table.get("row_checkbox")
+                    chk = None
+                    if chk_sel:
+                        chk = await first_row.query_selector(chk_sel)
+                    if not chk:
+                        for sel in ['input[type="checkbox"]', 'input[name^="chk"]']:
+                            chk = await first_row.query_selector(sel)
+                            if chk:
+                                break
+                    if chk:
+                        try:
+                            checked = await chk.is_checked()
+                            if not checked:
+                                await chk.click(force=True)
+                                await page.wait_for_timeout(300)
+                                self._progress("  행 체크박스 체크 완료")
+                        except Exception as e:
+                            self._progress(f"  체크박스 체크 실패: {e}")
+
+                # ── dialog(alert) 메시지 캡처 준비 ──
+                _dialog_messages = []
+
+                def _capture_dialog(dialog):
+                    _dialog_messages.append(dialog.message)
+                    # 기존 핸들러가 accept 하므로 여기서는 캡처만
+
+                page.on("dialog", _capture_dialog)
+
+                # ── 담기 버튼 클릭 ──
+                # type=image 버튼은 is_visible() False일 수 있으므로 query 후 바로 click
+                cart_clicked = False
+                cart_btn_sel = table.get("cart_btn")
+                cart_in_row = table.get("cart_btn_in_row", False)
+
+                # 먼저 저장된 셀렉터 시도
+                if cart_btn_sel:
+                    try:
+                        if cart_in_row:
+                            btn = await first_row.query_selector(cart_btn_sel)
+                        else:
+                            btn = await page.query_selector(cart_btn_sel)
+                        if btn:
+                            await btn.click(force=True)
+                            await page.wait_for_timeout(2500)
+                            cart_clicked = True
+                            self._progress(f"  담기 버튼 클릭 ({cart_btn_sel})")
+                    except Exception as e:
+                        self._progress(f"  저장된 담기 버튼 실패: {e}")
+
+                # 폴백: 텍스트 기반 담기 버튼
+                if not cart_clicked:
+                    for sel in [
+                        'input[type="image"][id*="saveBag"]',
+                        'input[type="image"][id*="cart"]',
+                        'input[value*="담기"]',
+                        'button:has-text("담기")',
+                        'button:has-text("장바구니")',
+                    ]:
+                        try:
+                            btn = await page.query_selector(sel)
+                            if btn:
+                                await btn.click(force=True)
+                                await page.wait_for_timeout(2500)
+                                cart_clicked = True
+                                self._progress(f"  담기 버튼 클릭 (폴백 {sel})")
+                                break
+                        except Exception:
+                            continue
+
+                page.remove_listener("dialog", _capture_dialog)
+
+                if not cart_clicked:
+                    return {"success": False, "stage": "cart",
+                            "message": "담기 버튼 클릭 실패 - 버튼을 찾을 수 없음"}
+
+                # ── 장바구니 담김 여부 검증 ──
+                # 방법 1: alert 팝업 메시지에 성공 키워드 포함 여부
+                _SUCCESS_KEYWORDS = ["담겼습니다", "담았습니다", "추가되었",
+                                     "추가했", "저장되었", "완료"]
+                _FAIL_KEYWORDS = ["실패", "오류", "에러", "불가", "품절",
+                                  "재고", "선택"]
+                dialog_success = False
+                dialog_fail = False
+                for msg in _dialog_messages:
+                    self._progress(f"  팝업 메시지: {msg}")
+                    if any(kw in msg for kw in _SUCCESS_KEYWORDS):
+                        dialog_success = True
+                    if any(kw in msg for kw in _FAIL_KEYWORDS):
+                        dialog_fail = True
+
+                if dialog_success and not dialog_fail:
+                    self._progress(f"연동 테스트: 장바구니 담기 성공 - 팝업 확인 ({drug_name})")
+                    try:
+                        await self._clear_cart()
+                    except Exception:
+                        pass
+                    return {"success": True, "stage": "done",
+                            "message": "연동 정상 (팝업 검증)"}
+
+                if dialog_fail and not dialog_success:
+                    fail_msgs = "; ".join(_dialog_messages[:3])
+                    return {"success": False, "stage": "cart",
+                            "message": f"담기 실패 팝업: {fail_msgs}"}
+
+                # 방법 2: 장바구니 영역에 "비어있음" 텍스트 확인
+                await page.wait_for_timeout(1000)
+                cart_empty_texts = ["장바구니에 담긴 제품이 없습니다", "담긴 제품이 없습니다"]
+                cart_empty = False
+                for txt in cart_empty_texts:
+                    try:
+                        el = await page.query_selector(f'text="{txt}"')
+                        if el and await el.is_visible():
+                            cart_empty = True
+                            break
+                    except Exception:
+                        continue
+
+                if cart_empty and not dialog_success:
+                    return {"success": False, "stage": "cart",
+                            "message": f"담기 클릭 했으나 장바구니가 비어있음 ({drug_name})"}
+
+                # 방법 3: 팝업도 없고 빈 텍스트도 없으면 → 담기 성공으로 간주
+                # (많은 사이트가 별다른 피드백 없이 장바구니에 추가됨)
+                self._progress(f"연동 테스트: 장바구니 담기 성공 ({drug_name})")
+                try:
+                    await self._clear_cart()
+                except Exception:
+                    pass
+
+                return {"success": True, "stage": "done", "message": "연동 정상 (빈검색 검증)"}
+
+            except Exception as e:
+                return {"success": False, "stage": "cart",
+                        "message": f"빈 검색 테스트 오류: {e}"}
+
+        except Exception as e:
+            return {"success": False, "stage": "error", "message": str(e)}
+        finally:
+            await self._close()
 
     async def _add_item_to_cart(self, insurance_code: str, quantity: int,
                                 idx: int, total: int,
@@ -516,8 +1297,38 @@ class GenericWholesaler(WholesalerBase):
         search_btn = search.get("search_btn")
 
         if not search_input:
-            result["message"] = "검색 필드 셀렉터 없음"
-            return result
+            # AI Fallback: Claude로 셀렉터 재분석 시도
+            self._progress(f"  검색 필드 셀렉터 없음 → Claude AI 재분석 시도...")
+            try:
+                from core.ai_analyzer import analyze_selectors, is_available
+                if is_available() and self._page:
+                    ai_result = await analyze_selectors(
+                        self._page, site_url=self.url, wid=self._wid
+                    )
+                    if ai_result and ai_result.get("search_input"):
+                        self._selectors.setdefault("search", {}).update(
+                            {k: v for k, v in ai_result.items()
+                             if k in ("search_input", "search_btn")}
+                        )
+                        if ai_result.get("cart_btn"):
+                            self._selectors.setdefault("table", {})["cart_btn"] = ai_result["cart_btn"]
+                        if ai_result.get("qty_input"):
+                            self._selectors.setdefault("table", {})["qty_input"] = ai_result["qty_input"]
+                        self._selectors["confidence"] = "provisional"
+                        self._save_selectors(self._selectors)
+                        # 재분석 결과로 재시도
+                        search_input = ai_result["search_input"]
+                        search_btn = ai_result.get("search_btn")
+                        self._progress(f"  Claude AI 분석 성공 → {search_input}")
+                    else:
+                        result["message"] = "검색 필드 셀렉터 없음 (AI 분석 실패)"
+                        return result
+                else:
+                    result["message"] = "검색 필드 셀렉터 없음 (Claude API 키 미설정)"
+                    return result
+            except Exception as e:
+                result["message"] = f"검색 필드 셀렉터 없음 (AI 오류: {e})"
+                return result
 
         # 약품명 조회 (보험코드 검색 실패 시 약품명으로 재검색용)
         from core.drug_api import get_drug_name
@@ -541,10 +1352,11 @@ class GenericWholesaler(WholesalerBase):
             drug_name_for_search, flags=_re.IGNORECASE
         )[0].strip()
 
-        # 검색 시도: 보험코드 → 약품명(짧은) 순서
-        search_terms = [insurance_code]
+        # 검색 시도: 약품명(짧은) → 보험코드 순서
+        search_terms = []
         if short_name and short_name != insurance_code and len(short_name) >= 2:
             search_terms.append(short_name)
+        search_terms.append(insurance_code)
 
         self._progress(f"  검색어 목록: {search_terms}")
 
@@ -557,15 +1369,16 @@ class GenericWholesaler(WholesalerBase):
             await page.wait_for_timeout(300)
             await page.fill(search_input, term)
 
-            # 검색 실행 — 버튼 클릭 + Enter 이중 시도
+            # 검색 실행 — 버튼 클릭 또는 Enter (더블 포스트백 방지)
+            searched = False
             if search_btn:
                 try:
                     await page.click(search_btn)
+                    searched = True
                 except Exception:
                     pass
-            # 버튼 클릭과 무관하게 항상 Enter도 시도
-            # (일부 사이트는 버튼이 탭 전환용이고 Enter가 실제 검색)
-            await page.press(search_input, "Enter")
+            if not searched:
+                await page.press(search_input, "Enter")
 
             await page.wait_for_timeout(3000)
 
@@ -732,14 +1545,38 @@ class GenericWholesaler(WholesalerBase):
         if qty_filled:
             await page.wait_for_timeout(300)
 
+        # 행 체크박스 — 페이지 레벨 담기 버튼일 때 필수
+        if not cart_in_row:
+            chk_sel = table.get("row_checkbox")
+            if chk_sel:
+                chk = await row_el.query_selector(chk_sel)
+                if chk:
+                    checked = await chk.is_checked()
+                    if not checked:
+                        await chk.click(force=True)
+                        await page.wait_for_timeout(300)
+            else:
+                # 체크박스 셀렉터 미저장 — 자동 탐지
+                for sel in ['input[type="checkbox"]', 'input[name^="chk"]']:
+                    chk = await row_el.query_selector(sel)
+                    if chk:
+                        checked = await chk.is_checked()
+                        if not checked:
+                            await chk.click(force=True)
+                            await page.wait_for_timeout(300)
+                        break
+
         # 담기/추가 버튼 — 셀렉터 또는 컬럼 인덱스로
         cart_col = table.get("cart_col_idx")
         cart_clicked = False
 
         if cart_btn_sel:
-            btn = await row_el.query_selector(cart_btn_sel)
+            if cart_in_row:
+                btn = await row_el.query_selector(cart_btn_sel)
+            else:
+                btn = await page.query_selector(cart_btn_sel)
             if btn:
-                await btn.click()
+                await btn.click(force=True)
                 cart_clicked = True
 
         if not cart_clicked and cart_col is not None and cart_col < len(cells):
@@ -761,6 +1598,17 @@ class GenericWholesaler(WholesalerBase):
 
         if cart_clicked:
             await page.wait_for_timeout(2000)
+
+            # 페이지 레벨 담기 후 체크박스 해제 (다음 약품 중복 담기 방지)
+            if not cart_in_row:
+                try:
+                    chk_sel = table.get("row_checkbox", 'input[type="checkbox"]')
+                    chk = await row_el.query_selector(chk_sel)
+                    if chk and await chk.is_checked():
+                        await chk.click(force=True)
+                        await page.wait_for_timeout(200)
+                except Exception:
+                    pass
 
         # 팝업 닫기 (공통 패턴)
         for popup_sel in [
@@ -808,3 +1656,270 @@ class GenericWholesaler(WholesalerBase):
         else:
             self._progress("주문확정 버튼을 찾을 수 없음")
             raise RuntimeError("주문확정 버튼 탐지 실패")
+
+    # ────── 자동 재분석: 주문 중 전체 실패 시 셀렉터 리셋 후 1회 재시도 ──────
+
+    async def place_order_async(
+        self, items: list[dict], headless: bool = True, dry_run: bool = True
+    ) -> dict:
+        result = await super().place_order_async(items, headless=headless, dry_run=dry_run)
+
+        # 전체 실패 + 실패 사유가 셀렉터 관련일 때만 재분석
+        if result["success"]:
+            return result
+
+        results = result.get("results", [])
+        success_count = sum(1 for r in results if r.get("success"))
+        if success_count > 0:
+            return result  # 일부 성공 → 셀렉터 문제 아님
+
+        # 사유 분석: 셀렉터/구조 관련 실패인지 판별
+        fail_msgs = " ".join(r.get("message", "") for r in results)
+        selector_issue = any(kw in fail_msgs for kw in [
+            "셀렉터", "버튼을 찾을 수 없음", "검색 결과 없음",
+            "장바구니에 추가되지 않음", "담기 버튼",
+        ])
+        if not selector_issue:
+            return result  # 품절/재고 문제 → 재분석 불필요
+
+        self._progress("전체 실패 → 셀렉터 자동 재분석 시도 (1회)")
+
+        try:
+            # 셀렉터 초기화 후 재분석
+            from core.selector_store import delete_selectors
+            delete_selectors(self._wid)
+            self._selectors = {}
+
+            analyzer = GenericWholesaler({
+                "name": self.name, "url": self.url,
+                "id": self.user_id, "pw": self.password,
+                "_wid": self._wid,
+            })
+            await analyzer.analyze_site(headless=headless)
+
+            # 새 셀렉터로 재시도
+            self._selectors = self._load_selectors()
+            retry_result = await super().place_order_async(
+                items, headless=headless, dry_run=dry_run
+            )
+
+            if retry_result["success"]:
+                self._progress("자동 재분석 후 주문 성공!")
+            else:
+                self._progress("자동 재분석 후에도 실패")
+
+            return retry_result
+
+        except Exception as e:
+            self._progress(f"자동 재분석 오류: {e}")
+            return result
+
+    # ────── 이력 검색 (history_config 기반) ──────
+
+    async def _ensure_history_config(self, headless: bool = True):
+        """이력 검색 설정이 없으면 로그인 → 이력 페이지 탐지 → 저장한다."""
+        from core.history_config import get_config, save_config
+
+        cfg = get_config(self._wid)
+        if cfg and cfg.get("history_url"):
+            return  # 이미 있음
+
+        self._progress(f"{self.name} 이력 페이지 탐지 중...")
+        ok = await self.login_async(headless=headless)
+        if not ok:
+            self._progress(f"{self.name} 로그인 실패 — 이력 탐지 건너뜀")
+            return
+
+        detected = await self._detect_history_page()
+        if detected and detected.get("history_url"):
+            detected["name"] = self.name
+            detected["base_url"] = self.url
+            detected["login"] = self._selectors.get("login", {})
+            save_config(self._wid, detected, upload=True)
+            self._progress(f"{self.name} 이력 페이지 탐지 완료: {detected.get('history_page_name', '')}")
+        else:
+            self._progress(f"{self.name} 이력 페이지 없음")
+
+        try:
+            await self._close()
+        except Exception:
+            pass
+
+    async def search_history_async(self, drug_name: str,
+                                   lot_number: str = "",
+                                   headless: bool = True) -> list[dict]:
+        """history_config 기반으로 도매상 사이트에서 입고이력을 검색한다.
+
+        config가 없으면 로그인 후 이력 페이지를 자동 탐지하고 저장한 뒤 검색한다.
+        """
+        from core.history_config import get_config, save_config
+
+        cfg = get_config(self._wid)
+
+        results = []
+        try:
+            self._progress(f"{self.name} 입고이력 검색: {drug_name}")
+            ok = await self.login_async(headless=headless)
+            if not ok:
+                self._progress(f"{self.name} 로그인 실패")
+                return results
+
+            page = self._page
+
+            # history_config 없으면 자동 탐지
+            if not cfg or not cfg.get("history_url"):
+                self._progress(f"{self.name} 이력 페이지 자동 탐지 중...")
+                detected = await self._detect_history_page()
+                if not detected or not detected.get("history_url"):
+                    self._progress(f"{self.name} 이력 페이지 없음 — 건너뜀")
+                    return results
+                # 탐지 성공 → 저장
+                detected["name"] = self.name
+                detected["base_url"] = self.url
+                detected["login"] = self._selectors.get("login", {})
+                save_config(self._wid, detected, upload=True)
+                cfg = detected
+                self._progress(f"{self.name} 이력 페이지 탐지 완료: {cfg.get('history_page_name', '')}")
+
+            from urllib.parse import urljoin
+
+            # 이력 페이지 이동
+            history_url = cfg["history_url"]
+            base_url = cfg.get("base_url", self.url)
+            if not history_url.startswith("http"):
+                history_url = urljoin(base_url, history_url)
+            await page.goto(history_url, wait_until="domcontentloaded",
+                            timeout=15000)
+            await page.wait_for_timeout(2000)
+
+            # 팝업 닫기
+            await self._close_popup()
+
+            search = cfg.get("search", {})
+
+            # 기간 설정 (5년 버튼 있으면 클릭)
+            period_btn = search.get("period_btn")
+            if period_btn:
+                try:
+                    btn = page.locator(period_btn)
+                    if await btn.count() > 0:
+                        await btn.first.click(force=True)
+                        await page.wait_for_timeout(500)
+                except Exception:
+                    pass
+
+            # 약품명 입력
+            keyword_sel = search.get("keyword")
+            if keyword_sel:
+                try:
+                    await page.fill(keyword_sel, drug_name)
+                except Exception:
+                    self._progress(f"  검색어 입력 실패: {keyword_sel}")
+                    return results
+
+            # 로트번호 입력 (필드 있으면)
+            if lot_number:
+                lot_sel = search.get("lot_number")
+                if lot_sel:
+                    try:
+                        await page.fill(lot_sel, lot_number)
+                    except Exception:
+                        pass
+
+            # 검색 버튼 클릭
+            search_btn = search.get("search_btn")
+            if search_btn:
+                try:
+                    btn = page.locator(search_btn).first
+                    await btn.click(force=True)
+                    await page.wait_for_timeout(4000)
+                except Exception:
+                    await page.keyboard.press("Enter")
+                    await page.wait_for_timeout(4000)
+
+            # 테이블 파싱
+            results = await self._parse_history_table(page, cfg, drug_name,
+                                                       lot_number)
+
+        except Exception as e:
+            self._progress(f"{self.name} 이력 검색 오류: {e}")
+        finally:
+            try:
+                await self._close()
+            except Exception:
+                pass
+
+        return results
+
+    async def _parse_history_table(self, page, cfg: dict, drug_name: str,
+                                   lot_number: str = "") -> list[dict]:
+        """이력 테이블을 파싱하여 결과를 반환한다."""
+        results = []
+        table_cfg = cfg.get("table", {})
+        table_idx = table_cfg.get("index", 0)
+        columns = table_cfg.get("columns", {})
+
+        tables = page.locator("table")
+        table_count = await tables.count()
+        if table_idx >= table_count:
+            self._progress(f"  테이블 없음 (발견: {table_count}개)")
+            return results
+
+        target_table = tables.nth(table_idx)
+        rows = target_table.locator("tbody tr")
+        row_count = await rows.count()
+        self._progress(f"{self.name} 검색 결과: {row_count}건")
+
+        search_keywords = [k.strip() for k in drug_name.split() if k.strip()]
+
+        for i in range(min(row_count, 50)):
+            try:
+                row = rows.nth(i)
+                cells = row.locator("td")
+                cell_count = await cells.count()
+                if cell_count < 3:
+                    continue
+
+                drug = ""
+                order_date = ""
+                qty = 0
+                lot = ""
+                expiry = ""
+
+                if "drug_name" in columns and columns["drug_name"] < cell_count:
+                    drug = (await cells.nth(columns["drug_name"]).inner_text()).strip()
+                if "date" in columns and columns["date"] < cell_count:
+                    order_date = (await cells.nth(columns["date"]).inner_text()).strip()
+                if "qty" in columns and columns["qty"] < cell_count:
+                    qty_text = (await cells.nth(columns["qty"]).inner_text()).strip()
+                    nums = re.sub(r'[^\d]', '', qty_text)
+                    qty = int(nums) if nums else 0
+                if "lot_number" in columns and columns["lot_number"] < cell_count:
+                    lot = (await cells.nth(columns["lot_number"]).inner_text()).strip()
+                if "expiry" in columns and columns["expiry"] < cell_count:
+                    expiry = (await cells.nth(columns["expiry"]).inner_text()).strip()
+
+                if not drug or "없습니다" in drug or "조회" in drug:
+                    continue
+
+                drug_lower = drug.lower()
+                if not all(kw.lower() in drug_lower for kw in search_keywords):
+                    continue
+
+                matched = bool(lot_number and lot and lot_number in lot)
+
+                results.append({
+                    "drug_name": drug,
+                    "order_date": order_date,
+                    "qty": qty,
+                    "lot_number": lot,
+                    "expiry": expiry,
+                    "wholesaler_id": self._wid,
+                    "wholesaler_name": self.name,
+                    "source": self.name,
+                    "matched": matched,
+                })
+            except Exception:
+                continue
+
+        return results

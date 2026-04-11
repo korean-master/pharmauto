@@ -327,7 +327,7 @@ class OrderScheduler(QThread):
 
     def _place_and_update(self, items: list[dict],
                           settings: dict) -> list[dict]:
-        """주문 실행 → 재고 업데이트 → 결과 반환."""
+        """주문 실행 → 품절 재주문 → 재고 업데이트 → 결과 반환."""
         from core.inventory import update_stock_after_order
         from core.order_engine import is_cart_only_mode, place_orders
 
@@ -335,17 +335,38 @@ class OrderScheduler(QThread):
         mode_text = "장바구니 담기" if cart_only else "자동 주문"
         self.order_progress.emit(f"{len(items)}개 약품 {mode_text} 중...")
 
-        results = place_orders(
+        results, retry_results = place_orders(
             items,
             progress_callback=lambda msg: self.order_progress.emit(msg),
             dry_run=cart_only,
         )
 
+        def _update_stock(item):
+            code = item.get("insurance_code", "")
+            pack_size = item.get("pack_size", 0)
+            box_qty = item.get("box_qty", 0)
+            if pack_size and box_qty:
+                actual_qty = box_qty * pack_size
+            else:
+                actual_qty = item.get("qty", 0)
+            if code and actual_qty > 0:
+                update_stock_after_order(code, actual_qty)
+
         for r in results:
-            if r.get("success"):
-                for item in r.get("items", []):
-                    update_stock_after_order(
-                        item["insurance_code"], item.get("qty", 0)
-                    )
+            for item in r.get("success_items", []):
+                _update_stock(item)
+
+        # 품절 재주문 성공한 아이템도 재고 반영
+        for rr in retry_results:
+            if rr.get("success"):
+                _update_stock(rr["item"])
+
+        # 품절 재주문 요약 로그
+        if retry_results:
+            ok = sum(1 for rr in retry_results if rr.get("success"))
+            fail = len(retry_results) - ok
+            self.order_progress.emit(
+                f"품절 재주문: 성공 {ok}건 / 실패 {fail}건"
+            )
 
         return results

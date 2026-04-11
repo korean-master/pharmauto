@@ -63,7 +63,7 @@ class UnitSelectDialog(QDialog):
         # 구분선
         line = QLabel()
         line.setFixedHeight(1)
-        line.setStyleSheet("background: #E5E8EB;")
+        line.setStyleSheet("background: #DFE1E6;")
         layout.addWidget(line)
 
         # 규격 옵션들

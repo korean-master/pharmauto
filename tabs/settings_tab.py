@@ -48,9 +48,10 @@ def _save_json(filename, data):
 
 
 class SettingsTab(QWidget):
-    def __init__(self, on_wholesaler_changed=None):
+    def __init__(self, on_wholesaler_changed=None, on_schedule_changed=None):
         super().__init__()
         self._on_wholesaler_changed = on_wholesaler_changed
+        self._on_schedule_changed = on_schedule_changed
         self._inventory_loaded = False
         self._init_ui()
         self._load_all()
@@ -59,10 +60,11 @@ class SettingsTab(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setStyleSheet(SCROLL_AREA)
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setStyleSheet(SCROLL_AREA)
+        scroll = self._scroll
 
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -154,7 +156,7 @@ class SettingsTab(QWidget):
         self.ws_table.setColumnWidth(2, 100)
         self.ws_table.setColumnWidth(3, 100)
         self.ws_table.setColumnWidth(4, 70)
-        self.ws_table.setColumnWidth(5, 80)
+        self.ws_table.setColumnWidth(5, 200)
         self.ws_table.setColumnWidth(6, 70)
         self.ws_table.setColumnWidth(7, 70)
         self.ws_table.setStyleSheet(
@@ -323,6 +325,25 @@ class SettingsTab(QWidget):
         self._split_group.addButton(self._split_single, 0)
         split_lay.addWidget(self._split_single)
 
+        # 기본 도매상 선택 (단일 도매상 + 예약 자동주문 공용)
+        default_ws_row = QHBoxLayout()
+        default_ws_row.setSpacing(8)
+        default_ws_row.setContentsMargins(24, 0, 0, 0)
+        default_ws_label = QLabel("기본 도매상:")
+        default_ws_label.setStyleSheet(
+            "font-size: 13px; font-family: 'Malgun Gothic'; font-weight: 600;"
+        )
+        default_ws_row.addWidget(default_ws_label)
+        self._default_ws_combo = QComboBox()
+        self._default_ws_combo.setMinimumWidth(150)
+        self._default_ws_combo.setStyleSheet(COMBO_MALGUN)
+        ws_all = _load_json("wholesalers.json")
+        for wid, w in ws_all.items():
+            self._default_ws_combo.addItem(w["name"], wid)
+        default_ws_row.addWidget(self._default_ws_combo)
+        default_ws_row.addStretch()
+        split_lay.addLayout(default_ws_row)
+
         self._split_even = QRadioButton("비율 분배 — 선택한 도매상들에 금액 기준으로 분배")
         self._split_even.setStyleSheet(
             "QRadioButton { font-size: 13px; font-family: 'Malgun Gothic'; padding: 4px 0; }"
@@ -331,6 +352,7 @@ class SettingsTab(QWidget):
         split_lay.addWidget(self._split_even)
 
         self._split_single.setChecked(True)
+        self._split_single.toggled.connect(self._on_split_mode_changed)
 
         # 분배 도매상 선택 (체크박스 + 비율 스핀박스)
         split_ws_label = QLabel("분배할 도매상과 비율:")
@@ -351,8 +373,9 @@ class SettingsTab(QWidget):
         layout.addWidget(split_card)
 
         # === 예약 자동 주문 카드 ===
-        sched_card = QFrame()
-        sched_card.setStyleSheet(CARD_FRAME)
+        self.sched_card = QFrame()
+        self.sched_card.setStyleSheet(CARD_FRAME)
+        sched_card = self.sched_card
         sched_lay = QVBoxLayout(sched_card)
         sched_lay.setContentsMargins(24, 24, 24, 24)
         sched_lay.setSpacing(12)
@@ -371,6 +394,7 @@ class SettingsTab(QWidget):
         self.sched_enabled_cb.setStyleSheet(
             "QCheckBox { font-size: 14px; font-weight: 600; font-family: 'Malgun Gothic'; padding: 4px 0; }"
         )
+        self.sched_enabled_cb.toggled.connect(self._on_sched_enabled_toggled)
         sched_lay.addWidget(self.sched_enabled_cb)
 
         # 모드 선택
@@ -428,24 +452,15 @@ class SettingsTab(QWidget):
         self._sched_once_time.timeChanged.connect(self._update_once_desc)
         self._update_once_desc()
 
-        # 구분선
+        # 기본 도매상 안내
         sched_line = QLabel()
         sched_line.setFixedHeight(1)
-        sched_line.setStyleSheet("background: #E5E8EB;")
+        sched_line.setStyleSheet("background: #DFE1E6;")
         sched_lay.addWidget(sched_line)
 
-        ws_row = QHBoxLayout()
-        ws_row.setSpacing(8)
-        ws_row.addWidget(QLabel("기본 도매상:"))
-        self.sched_ws_combo = QComboBox()
-        self.sched_ws_combo.setMinimumWidth(150)
-        self.sched_ws_combo.setStyleSheet(COMBO_MALGUN)
-        ws = _load_json("wholesalers.json")
-        for wid, w in ws.items():
-            self.sched_ws_combo.addItem(w["name"], wid)
-        ws_row.addWidget(self.sched_ws_combo)
-        ws_row.addStretch()
-        sched_lay.addLayout(ws_row)
+        sched_ws_note = QLabel("기본 도매상은 위 '주문 분배' 설정에서 변경할 수 있습니다.")
+        sched_ws_note.setStyleSheet(DESCRIPTION)
+        sched_lay.addWidget(sched_ws_note)
 
         save_sched_btn = QPushButton("예약 설정 저장")
         save_sched_btn.setStyleSheet(btn_success())
@@ -604,7 +619,7 @@ class SettingsTab(QWidget):
         anydesk_btn = QPushButton("원격 지원 요청")
         anydesk_btn.setStyleSheet(
             f"QPushButton {{ font-size: 13px; padding: 10px 24px; "
-            f"background: #F45452; color: white; border: none; "
+            f"background: #EF4444; color: white; border: none; "
             f"border-radius: 8px; font-weight: 600; font-family: 'Malgun Gothic'; }}"
             f"QPushButton:hover {{ background: #D43D3B; }}"
         )
@@ -768,13 +783,20 @@ class SettingsTab(QWidget):
             status_item.setForeground(Qt.GlobalColor.gray)
             return
 
-        # 저장된 상태가 있으면 그대로 표시
+        # 저장된 상태가 있으면 표시
         saved = data.get("connection_status", "")
         if saved:
             status_item.setText(saved)
             status_item.setForeground(
                 self._STATUS_COLORS.get(saved, Qt.GlobalColor.black)
             )
+            # 실패 상태면 자동 재테스트 (기존 상태 유지하며 백그라운드 실행)
+            _FAIL_STATUSES = {"로그인 실패", "장바구니 실패", "접속 불가",
+                              "사이트 오류", "연동 오류"}
+            if saved in _FAIL_STATUSES:
+                status_item.setText(f"{saved} → 재확인 중...")
+                status_item.setForeground(Qt.GlobalColor.blue)
+                self._run_ws_test(row, wid, data)
             return
 
         # 저장된 상태 없음 → 첫 1회 테스트 (백그라운드)
@@ -783,7 +805,11 @@ class SettingsTab(QWidget):
         self._run_ws_test(row, wid, data)
 
     def _run_ws_test(self, row: int, wid: str, data: dict):
-        """백그라운드에서 풀 연동 테스트 (로그인→장바구니) 후 결과 저장."""
+        """백그라운드에서 풀 연동 테스트 (로그인→장바구니) 후 결과 저장.
+
+        Generic 도매상은 실패 시 셀렉터를 초기화하고 AI 재분석을 반복한다.
+        최대 MAX_ATTEMPTS회 시도 후 결과를 반환한다.
+        """
         from PyQt6.QtCore import QThread, pyqtSignal
 
         class _FullTester(QThread):
@@ -798,10 +824,16 @@ class SettingsTab(QWidget):
             def run(self):
                 import asyncio
 
-                # 1단계: URL 접속
+                # ID/PW 복호화
+                from core.crypto import decrypt_dict_fields
+                config = decrypt_dict_fields(
+                    dict(self._data), ["id", "pw"]
+                )
+
+                # 1단계: URL 접속 확인
                 try:
                     import requests as _req
-                    resp = _req.get(self._data["url"], timeout=5, allow_redirects=True)
+                    resp = _req.get(config["url"], timeout=5, allow_redirects=True)
                     if resp.status_code >= 500:
                         self.done.emit(self._row, self._wid, "사이트 오류")
                         return
@@ -809,34 +841,88 @@ class SettingsTab(QWidget):
                     self.done.emit(self._row, self._wid, "접속 불가")
                     return
 
-                # 2단계: 로그인 + 장바구니 테스트
+                # 2단계: 자가 치유 루프 (최대 4회 재분석→재시도)
+                MAX_ATTEMPTS = 4
+                last_status = "연동 오류"
+
                 try:
                     from core.order_engine import _get_wholesaler_class
                     ws_class = _get_wholesaler_class(self._wid)
-                    if not ws_class:
+                    is_generic = ws_class is None
+
+                    if is_generic:
                         from wholesalers.generic import GenericWholesaler
                         ws_class = GenericWholesaler
-                        config = {**self._data, "_wid": self._wid}
-                        ws = ws_class(config)
-                        asyncio.run(ws.analyze_site(headless=True))
-                        ws = ws_class(config)
-                    else:
-                        ws = ws_class(self._data)
+                        config["_wid"] = self._wid
 
-                    result = asyncio.run(ws.test_connection(headless=True))
+                    for attempt in range(MAX_ATTEMPTS):
+                        print(f"[자가치유] {self._wid} 시도 {attempt + 1}/{MAX_ATTEMPTS}")
 
-                    if result["success"]:
-                        self.done.emit(self._row, self._wid, "정상")
-                    else:
+                        if is_generic:
+                            if attempt > 0:
+                                # 이전 시도 실패 → 셀렉터 캐시 초기화 후 재분석
+                                print(f"[자가치유] {self._wid} 셀렉터 초기화 → AI 재분석 중...")
+                                from core.selector_store import delete_selectors
+                                delete_selectors(self._wid)
+                                ws_analyze = ws_class(config)
+                                asyncio.run(ws_analyze.analyze_site(headless=True))
+                            else:
+                                # 0회차: 저장된 셀렉터가 없거나 불완전할 때만 분석
+                                from core.selector_store import load_selectors
+                                cur_sel = load_selectors(self._wid)
+                                if not cur_sel or not cur_sel.get("auto_detected"):
+                                    print(f"[자가치유] {self._wid} 셀렉터 분석 필요...")
+                                    ws_analyze = ws_class(config)
+                                    asyncio.run(ws_analyze.analyze_site(headless=True))
+
+                        # 연동 테스트 실행
+                        ws_test = ws_class(config)
+                        result = asyncio.run(ws_test.test_connection(headless=True))
+
+                        if result["success"]:
+                            last_status = "정상"
+                            print(f"[자가치유] {self._wid} 성공! (총 {attempt + 1}회 시도)")
+
+                            # 이력 검색 설정이 없으면 별도 탐지 시도
+                            if is_generic:
+                                try:
+                                    from core.history_config import get_config as _get_hcfg
+                                    h_cfg = _get_hcfg(self._wid)
+                                    if not h_cfg or not h_cfg.get("history_url"):
+                                        print(f"[자가치유] {self._wid} 이력 페이지 탐지 시도...")
+                                        ws_hist = ws_class(config)
+                                        asyncio.run(ws_hist._ensure_history_config(headless=True))
+                                except Exception as he:
+                                    print(f"[자가치유] {self._wid} 이력 탐지 오류: {he}")
+
+                            break
+
+                        # 실패 처리
                         stage = result.get("stage", "")
+                        message = result.get("message", "")
+                        print(f"[자가치유] {self._wid} 실패 stage={stage}: {message}")
+
                         if stage == "login":
-                            self.done.emit(self._row, self._wid, "로그인 실패")
+                            last_status = "로그인 실패"
                         elif stage == "cart":
-                            self.done.emit(self._row, self._wid, "장바구니 실패")
+                            last_status = "장바구니 실패"
                         else:
-                            self.done.emit(self._row, self._wid, "연동 오류")
-                except Exception:
-                    self.done.emit(self._row, self._wid, "연동 오류")
+                            last_status = "연동 오류"
+
+                        # 전용 클래스는 자동 재분석 불가 → 반복 중단
+                        if not is_generic:
+                            break
+
+                        if attempt < MAX_ATTEMPTS - 1:
+                            print(f"[자가치유] {self._wid} 다음 시도 준비 중...")
+
+                except Exception as e:
+                    import traceback
+                    print(f"[자가치유] {self._wid} 예외 발생: {e}")
+                    traceback.print_exc()
+                    last_status = "연동 오류"
+
+                self.done.emit(self._row, self._wid, last_status)
 
         tester = _FullTester(row, wid, data)
         tester.done.connect(self._on_ws_test_done)
@@ -847,19 +933,37 @@ class SettingsTab(QWidget):
 
     def _on_ws_test_done(self, row: int, wid: str, status_text: str):
         """테스트 결과를 표시하고 wholesalers.json에 저장한다."""
+        # 이력 검색 설정 확인 — 전용 클래스(geo/baekje) 아닌 도매상만
+        history_ok = True
+        from core.order_engine import _WHOLESALER_CLASSES
+        if wid not in _WHOLESALER_CLASSES and status_text == "정상":
+            try:
+                from core.history_config import get_config
+                h_cfg = get_config(wid)
+                history_ok = bool(h_cfg and h_cfg.get("history_url"))
+            except Exception:
+                history_ok = False
+
         # UI 업데이트
+        display_text = status_text
+        if status_text == "정상" and not history_ok:
+            display_text = "정상 (이력검색 미지원)"
+
         if row < self.ws_table.rowCount():
             status_item = self.ws_table.item(row, 5)
             if status_item:
-                status_item.setText(status_text)
-                status_item.setForeground(
-                    self._STATUS_COLORS.get(status_text, Qt.GlobalColor.black)
-                )
+                status_item.setText(display_text)
+                color = self._STATUS_COLORS.get(status_text, Qt.GlobalColor.black)
+                if not history_ok and status_text == "정상":
+                    from PyQt6.QtGui import QColor
+                    color = QColor("#F59E0B")  # 주황 — 주문은 되지만 이력 미지원
+                status_item.setForeground(color)
 
         # 결과를 wholesalers.json에 저장 → 다음에 열 때 바로 표시
         ws = _load_json("wholesalers.json")
         if wid in ws:
             ws[wid]["connection_status"] = status_text
+            ws[wid]["history_supported"] = history_ok
             _save_json("wholesalers.json", ws)
 
     def _add_wholesaler_row(self):
@@ -917,6 +1021,73 @@ class SettingsTab(QWidget):
         self.ws_table.scrollToBottom()
         name_input.setFocus()
 
+    # --- 도매상 추가/삭제 시 settings.json 연쇄 동기화 ---
+
+    def _notify_wholesaler_changed(self):
+        """도매상 추가/삭제/수정 후 모든 관련 UI를 갱신한다."""
+        # 설정 탭 자체의 분배 UI + 기본 도매상 콤보 갱신
+        self._load_split_settings()
+        # 주문 탭 등 외부 콜백
+        if self._on_wholesaler_changed:
+            self._on_wholesaler_changed()
+
+    def _sync_settings_for_new_wholesaler(self, wid: str):
+        """새 도매상을 settings.json 분배비율에 자동 등록한다."""
+        settings = _load_json("settings.json")
+        ratios = settings.get("order_split_ratios", {})
+        if wid not in ratios:
+            ratios[wid] = 0
+            settings["order_split_ratios"] = ratios
+            _save_json("settings.json", settings)
+
+    def _sync_settings_rename_wholesaler(self, old_wid: str, new_wid: str):
+        """도매상 ID 변경 시 settings.json의 관련 항목을 전환한다."""
+        settings = _load_json("settings.json")
+        changed = False
+
+        ratios = settings.get("order_split_ratios", {})
+        if old_wid in ratios:
+            ratios[new_wid] = ratios.pop(old_wid)
+            settings["order_split_ratios"] = ratios
+            changed = True
+
+        split_ws = settings.get("order_split_wholesalers", [])
+        if old_wid in split_ws:
+            split_ws[split_ws.index(old_wid)] = new_wid
+            settings["order_split_wholesalers"] = split_ws
+            changed = True
+
+        if settings.get("default_wholesaler") == old_wid:
+            settings["default_wholesaler"] = new_wid
+            changed = True
+
+        if changed:
+            _save_json("settings.json", settings)
+
+    def _sync_settings_remove_wholesaler(self, wid: str):
+        """삭제된 도매상을 settings.json에서 제거한다."""
+        settings = _load_json("settings.json")
+        changed = False
+
+        ratios = settings.get("order_split_ratios", {})
+        if wid in ratios:
+            del ratios[wid]
+            settings["order_split_ratios"] = ratios
+            changed = True
+
+        split_ws = settings.get("order_split_wholesalers", [])
+        if wid in split_ws:
+            split_ws.remove(wid)
+            settings["order_split_wholesalers"] = split_ws
+            changed = True
+
+        if settings.get("default_wholesaler") == wid:
+            settings["default_wholesaler"] = ""
+            changed = True
+
+        if changed:
+            _save_json("settings.json", settings)
+
     def _confirm_ws_row(self, row: int):
         """인라인 입력 행을 확정하고 저장한다."""
         name_w = self.ws_table.cellWidget(row, 0)
@@ -947,6 +1118,9 @@ class SettingsTab(QWidget):
         wid = name.lower().replace(" ", "_")
         ws[wid] = data
         save_wholesalers_secure(ws)
+
+        # settings.json 분배비율에 자동 등록 (새 도매상이면 비율 0)
+        self._sync_settings_for_new_wholesaler(wid)
 
         # 행을 읽기 전용으로 교체
         self.ws_table.removeRow(row)
@@ -983,8 +1157,7 @@ class SettingsTab(QWidget):
 
         self.ws_table.setRowHeight(row, self._WS_ROW_HEIGHT)
 
-        if self._on_wholesaler_changed:
-            self._on_wholesaler_changed()
+        self._notify_wholesaler_changed()
 
     def _edit_ws_row(self, row: int):
         """기존 행을 인라인 편집 모드로 전환한다."""
@@ -1060,12 +1233,16 @@ class SettingsTab(QWidget):
         new_wid = name.lower().replace(" ", "_")
         if new_wid != old_wid:
             ws.pop(old_wid, None)
+            # settings.json에서도 old_wid → new_wid 전환
+            self._sync_settings_rename_wholesaler(old_wid, new_wid)
         ws[new_wid] = data
         _save_json("wholesalers.json", ws)
 
+        # 새 wid가 분배비율에 없으면 추가
+        self._sync_settings_for_new_wholesaler(new_wid)
+
         self._load_wholesalers()
-        if self._on_wholesaler_changed:
-            self._on_wholesaler_changed()
+        self._notify_wholesaler_changed()
 
     def _del_wholesaler_row(self, row: int):
         """행을 삭제하고 JSON에서도 제거."""
@@ -1083,10 +1260,10 @@ class SettingsTab(QWidget):
                 return
             ws.pop(wid, None)
             _save_json("wholesalers.json", ws)
+            self._sync_settings_remove_wholesaler(wid)
 
         self._load_wholesalers()
-        if self._on_wholesaler_changed:
-            self._on_wholesaler_changed()
+        self._notify_wholesaler_changed()
 
     def _save_wholesalers(self):
         """전체 테이블에서 인라인 편집 중인 행이 있으면 확정 후 저장."""
@@ -1098,8 +1275,7 @@ class SettingsTab(QWidget):
                 return
 
         QMessageBox.information(self, "저장", "도매상 정보가 저장되었습니다.")
-        if self._on_wholesaler_changed:
-            self._on_wholesaler_changed()
+        self._notify_wholesaler_changed()
 
     # --- 제외 목록 ---
     def _load_exclusions(self):
@@ -1192,13 +1368,15 @@ class SettingsTab(QWidget):
             QMessageBox.information(self, "알림", "자동주문 제외가 유지됩니다.")
             return
 
-        # 주문 설정 저장
+        # dialog 내에서 재고가 변경됐을 수 있으므로 최신 cfg를 다시 읽는다
+        fresh_cfg = get_drug_config(code) or cfg
+
         new_cfg = {
-            **cfg,
+            **fresh_cfg,
             "name": drug_name,
             "order_type": dlg.result_config["order_type"],
             "preferred_unit": dlg.result_config["preferred_unit"],
-            "unit_options": dlg.result_config["unit_options"] or cfg.get("unit_options", []),
+            "unit_options": dlg.result_config["unit_options"] or fresh_cfg.get("unit_options", []),
             "target_stock": dlg.result_config["target_stock"],
             "unit": dlg.result_config.get("unit", "정"),
         }
@@ -1376,12 +1554,15 @@ class SettingsTab(QWidget):
                 self._load_exclusions()
                 return
 
+            # dialog 내에서 재고가 변경됐을 수 있으므로 최신 cfg를 다시 읽는다
+            fresh_cfg = get_drug_config(code) or cfg
+
             new_cfg = {
-                **cfg,
+                **fresh_cfg,
                 "name": drug_name,
                 "order_type": dlg.result_config["order_type"],
                 "preferred_unit": dlg.result_config["preferred_unit"],
-                "unit_options": dlg.result_config["unit_options"] or cfg.get("unit_options", []),
+                "unit_options": dlg.result_config["unit_options"] or fresh_cfg.get("unit_options", []),
                 "target_stock": dlg.result_config["target_stock"],
                 "unit": dlg.result_config.get("unit", "정"),
             }
@@ -1477,6 +1658,18 @@ class SettingsTab(QWidget):
         else:
             self._split_single.setChecked(True)
 
+        # 기본 도매상 콤보 갱신 (도매상 추가/삭제 반영)
+        ws_all = _load_json("wholesalers.json")
+        default_ws = settings.get("default_wholesaler", "")
+        self._default_ws_combo.blockSignals(True)
+        self._default_ws_combo.clear()
+        for wid, w in ws_all.items():
+            self._default_ws_combo.addItem(w["name"], wid)
+        idx = self._default_ws_combo.findData(default_ws)
+        if idx >= 0:
+            self._default_ws_combo.setCurrentIndex(idx)
+        self._default_ws_combo.blockSignals(False)
+
         # 기존 위젯 제거
         from PyQt6.QtWidgets import QCheckBox
         for wid, (cb, spin, row_widget) in self._split_ws_rows.items():
@@ -1484,9 +1677,23 @@ class SettingsTab(QWidget):
             row_widget.deleteLater()
         self._split_ws_rows.clear()
 
+        # 기존 합계 라벨 제거
+        if hasattr(self, '_split_total_label') and self._split_total_label is not None:
+            self._split_ws_layout.removeWidget(self._split_total_label)
+            self._split_total_label.deleteLater()
+            self._split_total_label = None
+
         ws = _load_json("wholesalers.json")
         ratios = settings.get("order_split_ratios", {})
         selected = settings.get("order_split_wholesalers", [])
+
+        # 도매상 추가 후 ratios에 누락된 항목 자동 보정
+        missing = [wid for wid in ws if wid not in ratios]
+        if missing:
+            for wid in missing:
+                ratios[wid] = 0
+            settings["order_split_ratios"] = ratios
+            _save_json("settings.json", settings)
 
         self._split_updating = False  # 비율 자동 조정 중 무한루프 방지
 
@@ -1508,7 +1715,7 @@ class SettingsTab(QWidget):
 
             ratio_label = QLabel("비율:")
             ratio_label.setStyleSheet(
-                "font-size: 12px; color: #8B95A1; font-family: 'Malgun Gothic';"
+                "font-size: 12px; color: #6B7280; font-family: 'Malgun Gothic';"
             )
             row_lay.addWidget(ratio_label)
 
@@ -1535,9 +1742,26 @@ class SettingsTab(QWidget):
         self._split_ws_layout.addWidget(self._split_total_label)
         self._update_split_total_label()
 
+        # 단일 도매상 모드면 체크박스/스핀 비활성화
+        if self._split_single.isChecked():
+            self._on_split_mode_changed(True)
+
     def _get_checked_split_wids(self) -> list[str]:
         """체크된 도매상 ID 목록."""
         return [wid for wid, (cb, _, _) in self._split_ws_rows.items() if cb.isChecked()]
+
+    def _on_split_mode_changed(self, single_checked: bool):
+        """단일 도매상 선택 시 분배 체크박스 전부 해제 + 비활성화."""
+        for wid, (cb, spin, _) in self._split_ws_rows.items():
+            cb.setEnabled(not single_checked)
+            spin.setEnabled(not single_checked)
+            if single_checked:
+                cb.blockSignals(True)
+                cb.setChecked(False)
+                cb.blockSignals(False)
+                spin.setValue(0)
+        if single_checked:
+            self._update_split_total_label()
 
     def _on_split_check_changed(self, changed_wid: str):
         """도매상 체크 변경 시 비율을 자동 균등 배분한다."""
@@ -1614,7 +1838,7 @@ class SettingsTab(QWidget):
             cb, spin, _ = self._split_ws_rows[wid]
             parts.append(f"{cb.text()} {spin.value()}")
 
-        color = "#30D158" if total == 10 else "#F45452"
+        color = "#22C55E" if total == 10 else "#EF4444"
         self._split_total_label.setText(f"비율: {' : '.join(parts)} (합계 {total}/10)")
         self._split_total_label.setStyleSheet(
             f"font-size: 12px; font-weight: 600; color: {color}; "
@@ -1643,6 +1867,7 @@ class SettingsTab(QWidget):
 
         settings["order_split_wholesalers"] = checked
         settings["order_split_ratios"] = ratios
+        settings["default_wholesaler"] = self._default_ws_combo.currentData() or ""
         _save_json("settings.json", settings)
 
         if self._split_even.isChecked() and checked:
@@ -1653,6 +1878,9 @@ class SettingsTab(QWidget):
             QMessageBox.information(self, "저장", f"비율 분배: {' : '.join(parts)}")
         else:
             QMessageBox.information(self, "저장", "단일 도매상 주문")
+
+        if self._on_schedule_changed:
+            self._on_schedule_changed()
 
     # --- 주문 확정 방식 ---
     def _load_confirm_settings(self):
@@ -1670,9 +1898,31 @@ class SettingsTab(QWidget):
         mode_text = "장바구니만 담기" if self._confirm_cart.isChecked() else "자동 주문 확정"
         QMessageBox.information(self, "저장", f"주문 확정 방식: {mode_text}")
 
+        if self._on_schedule_changed:
+            self._on_schedule_changed()
+
+    def scroll_to_schedule(self):
+        """예약 자동 주문 카드로 스크롤한다."""
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(50, lambda: self._scroll.ensureWidgetVisible(
+            self.sched_card, 0, 20
+        ))
+
+    def _on_sched_enabled_toggled(self, enabled: bool):
+        """예약 자동 주문 체크 해제 시 하위 컨트롤 전부 비활성화."""
+        self._sched_radio_multi.setEnabled(enabled)
+        self._sched_radio_once.setEnabled(enabled)
+        self._sched_once_time.setEnabled(enabled)
+        # _sched_time_rows: (row_widget, time_edit, checkbox, range_label)
+        for row_widget, time_edit, cb, _ in self._sched_time_rows:
+            time_edit.setEnabled(enabled)
+            cb.setEnabled(enabled)
+            cb.setChecked(cb.isChecked() and enabled)
+
     def _load_schedule_settings(self):
         settings = _load_json("settings.json")
         self.sched_enabled_cb.setChecked(settings.get("schedule_enabled", False))
+        self._on_sched_enabled_toggled(self.sched_enabled_cb.isChecked())
 
         # 모드
         mode = settings.get("schedule_mode", "multiple")
@@ -1708,11 +1958,6 @@ class SettingsTab(QWidget):
             m = int(parts[1]) if len(parts) > 1 else 0
             self._add_schedule_time_row(QTime(h, m), enabled)
 
-        default_ws = settings.get("default_wholesaler", "geo")
-        idx = self.sched_ws_combo.findData(default_ws)
-        if idx >= 0:
-            self.sched_ws_combo.setCurrentIndex(idx)
-
     def _save_schedule_settings(self):
         settings = _load_json("settings.json")
         settings["schedule_enabled"] = self.sched_enabled_cb.isChecked()
@@ -1729,7 +1974,6 @@ class SettingsTab(QWidget):
         ]
         # 레거시 키 제거
         settings.pop("order_schedule_times", None)
-        settings["default_wholesaler"] = self.sched_ws_combo.currentData() or "geo"
         _save_json("settings.json", settings)
 
         status = "켜짐" if self.sched_enabled_cb.isChecked() else "꺼짐"
@@ -1748,6 +1992,10 @@ class SettingsTab(QWidget):
             f"예약 주문 설정이 저장되었습니다.\n"
             f"자동 주문: {status} / {detail}"
         )
+
+        # 자동주문 탭 요약 동기화
+        if self._on_schedule_changed:
+            self._on_schedule_changed()
 
     # --- 알림 설정 ---
     def _load_notification_settings(self):

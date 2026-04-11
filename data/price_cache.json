@@ -1,0 +1,50 @@
+{
+  "671705180": {
+    "baekje": {
+      "unit_price": 534,
+      "pack_price": 16020,
+      "pack_size": 30,
+      "updated_at": "2026-04-09T14:36:27.466756"
+    }
+  },
+  "647800120": {
+    "baekje": {
+      "unit_price": 646,
+      "pack_price": 19380,
+      "pack_size": 30,
+      "updated_at": "2026-04-09T14:55:44.092992"
+    }
+  },
+  "641906500": {
+    "baekje": {
+      "unit_price": 622,
+      "pack_price": 18660,
+      "pack_size": 30,
+      "updated_at": "2026-04-09T14:56:46.078757"
+    }
+  },
+  "641607530": {
+    "baekje": {
+      "unit_price": 807,
+      "pack_price": 24210,
+      "pack_size": 30,
+      "updated_at": "2026-04-09T15:11:46.482550"
+    }
+  },
+  "653601420": {
+    "baekje": {
+      "unit_price": 327,
+      "pack_price": 19620,
+      "pack_size": 60,
+      "updated_at": "2026-04-09T16:08:12.762989"
+    }
+  },
+  "647801510": {
+    "baekje": {
+      "unit_price": 210,
+      "pack_price": 21000,
+      "pack_size": 100,
+      "updated_at": "2026-04-09T18:03:33.568239"
+    }
+  }
+}

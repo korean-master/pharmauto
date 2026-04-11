@@ -234,8 +234,45 @@ def place_orders(order_items: list[dict], progress_callback=None,
                 except Exception:
                     pass
 
+        # 성공/실패 분리 — 품절(out_of_stock)과 일반 실패 구분
+        failed_codes = set(
+            f.get("insurance_code", "") for f in failed
+        )
+
+        # ws_results에서 품절 여부 확인
+        oos_codes = set()
+        for r in ws_results:
+            if r.get("out_of_stock") and r.get("insurance_code"):
+                oos_codes.add(r["insurance_code"])
+
+        success_items = [
+            it for it in items
+            if it.get("insurance_code", "") not in failed_codes
+        ]
+        failed_items_detail = [
+            it for it in items
+            if it.get("insurance_code", "") in failed_codes
+        ]
+        oos_items = [
+            it for it in failed_items_detail
+            if it.get("insurance_code", "") in oos_codes
+        ]
+
         if success:
-            _save_order_history(items, wid, ws_name)
+            ok_status = "cart_only" if dry_run else "ordered"
+            if success_items:
+                _save_order_history(success_items, wid, ws_name, status=ok_status)
+
+        # 실패한 아이템 이력 기록 — 품절은 out_of_stock, 나머지는 failed
+        if failed_items_detail:
+            normal_fail = [it for it in failed_items_detail
+                           if it.get("insurance_code", "") not in oos_codes]
+            if oos_items:
+                _save_order_history(oos_items, wid, ws_name, status="out_of_stock")
+            if normal_fail:
+                _save_order_history(normal_fail, wid, ws_name, status="failed")
+        elif not success:
+            _save_order_history(items, wid, ws_name, status="failed")
 
         # 도매상 연결 상태 갱신
         _update_ws_status(wid, "정상" if success else "연동 오류")
@@ -245,11 +282,27 @@ def place_orders(order_items: list[dict], progress_callback=None,
             "wholesaler_name": ws_name,
             "items": items,
             "success": success,
+            "success_items": success_items if success else [],
             "message": message or ("주문 완료" if success else "주문 실패"),
             "failed_items": failed,
+            "oos_items": oos_items,
         })
 
-    return results
+    # ── 품절 항목 자동 재주문 (다른 도매상으로) ──
+    all_oos = []
+    for r in results:
+        for it in r.get("oos_items", []):
+            it["_original_wholesaler"] = r["wholesaler_id"]
+            it["_original_ws_name"] = r["wholesaler_name"]
+            all_oos.append(it)
+
+    retry_results = []
+    if all_oos and not dry_run:
+        if progress_callback:
+            progress_callback(f"품절 {len(all_oos)}건 → 대체 도매상 재주문 시도...")
+        retry_results = _retry_oos_items(all_oos, wholesalers, progress_callback)
+
+    return results, retry_results
 
 
 # 도매상 ID → 클래스 매핑 (자동 탐색)
@@ -306,34 +359,61 @@ def _execute_wholesaler_order(wid: str, ws_config: dict, items: list[dict],
         for it in items
     ]
 
-    # 장바구니만 담기 모드면 브라우저를 보여서 약사가 확인할 수 있게
-    headless = not dry_run
-
     return asyncio.run(
-        ws.place_order_async(order_items, headless=headless, dry_run=dry_run)
+        ws.place_order_async(order_items, headless=True, dry_run=dry_run)
     )
 
 
-def retry_failed_orders(failed_items: list[dict]) -> list[dict]:
-    """품절 시 다른 도매상으로 자동 재주문을 시도한다."""
-    wholesalers = _load_wholesalers()
+def _retry_oos_items(oos_items: list[dict], wholesalers: dict,
+                     progress_callback=None) -> list[dict]:
+    """품절 항목을 다른 도매상으로 자동 재주문한다.
+
+    Args:
+        oos_items: 품절된 주문 항목 리스트 (_original_wholesaler 키 포함)
+        wholesalers: 전체 도매상 설정 dict
+        progress_callback: 진행 상황 콜백
+
+    Returns:
+        [{"item": dict, "original_ws": str, "retry_ws": str, "success": bool}, ...]
+    """
     sorted_ws = sorted(wholesalers.items(), key=lambda x: x[1].get("priority", 99))
 
     results = []
-    for item in failed_items:
-        original_wid = item["wholesaler_id"]
+    for item in oos_items:
+        original_wid = item.get("_original_wholesaler", "")
+        drug_name = item.get("drug_name", item.get("insurance_code", ""))
         ordered = False
 
         for wid, ws in sorted_ws:
             if wid == original_wid:
                 continue
-            item_copy = {**item, "wholesaler_id": wid}
-            success = _execute_wholesaler_order(wid, ws, [item_copy])
-            if success:
-                _save_order_history([item_copy], wid, ws["name"])
+
+            ws_name = ws.get("name", wid)
+            if progress_callback:
+                progress_callback(f"  품절 재주문: {drug_name} → {ws_name}")
+
+            ws_config = {**ws, "id": ws.get("id", ""), "pw": ws.get("pw", "")}
+            order_result = _execute_wholesaler_order(
+                wid, ws_config, [item], progress_callback
+            )
+
+            ws_success = (order_result.get("success", False)
+                          if isinstance(order_result, dict) else order_result)
+            ws_results = (order_result.get("results", [])
+                          if isinstance(order_result, dict) else [])
+
+            if ws_success:
+                # 실제 주문 결과 반영
+                for r in ws_results:
+                    if r.get("success") and r.get("insurance_code"):
+                        item["pack_size"] = r.get("pack_size", 0)
+                        item["box_qty"] = r.get("box_qty", 0)
+
+                _save_order_history([item], wid, ws_name, status="ordered")
                 results.append({
-                    "item": item_copy,
-                    "wholesaler_name": ws["name"],
+                    "item": item,
+                    "original_ws": item.get("_original_ws_name", original_wid),
+                    "retry_ws": ws_name,
                     "success": True,
                 })
                 ordered = True
@@ -342,14 +422,16 @@ def retry_failed_orders(failed_items: list[dict]) -> list[dict]:
         if not ordered:
             results.append({
                 "item": item,
-                "wholesaler_name": "",
+                "original_ws": item.get("_original_ws_name", original_wid),
+                "retry_ws": "",
                 "success": False,
             })
 
     return results
 
 
-def _save_order_history(items: list[dict], wid: str, ws_name: str):
+def _save_order_history(items: list[dict], wid: str, ws_name: str,
+                        status: str = "ordered"):
     import math
     from core.inventory import get_drug_config
 
@@ -383,7 +465,7 @@ def _save_order_history(items: list[dict], wid: str, ws_name: str):
                (order_date, insurance_code, drug_name, spec, qty,
                 pack_size, box_qty, unit_price, total_price,
                 wholesaler_id, wholesaler_name, status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ordered', ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 now.strftime("%Y-%m-%d"),
                 code,
@@ -396,6 +478,7 @@ def _save_order_history(items: list[dict], wid: str, ws_name: str):
                 total_price,
                 wid,
                 ws_name,
+                status,
                 now.isoformat(),
             ),
         )

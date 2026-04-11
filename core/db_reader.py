@@ -82,8 +82,12 @@ def fetch_prescriptions(time_range: str = "all",
     시간대 필터가 있으면 prsdrug+prescript 조인으로 해당 시간대에
     조제된 보험코드만 필터링한다.
     """
-    today = datetime.now().strftime("%Y%m%d")
-    print(f"[DB] 출고 조회 - 날짜: {today}, 시간대: {time_range}, "
+    now = datetime.now()
+    if time_range == "yesterday":
+        target_date = (now - timedelta(days=1)).strftime("%Y%m%d")
+    else:
+        target_date = now.strftime("%Y%m%d")
+    print(f"[DB] 출고 조회 - 날짜: {target_date}, 시간대: {time_range}, "
           f"커스텀: {start_time}~{end_time}")
 
     conn = get_connection()
@@ -108,9 +112,9 @@ def fetch_prescriptions(time_range: str = "all",
             WHERE SD_DATE = ? AND SD_DAYAMT2 > 0
             GROUP BY SD_ISCODE
             ORDER BY total_out DESC
-        """, (today,))
+        """, (target_date,))
     else:
-        today_prefix = today + "%"
+        date_prefix = target_date + "%"
         cursor.execute("""
             SELECT SD_ISCODE, SUM(SD_DAYAMT2) as total_out
             FROM STOCKDATE
@@ -125,7 +129,7 @@ def fetch_prescriptions(time_range: str = "all",
               )
             GROUP BY SD_ISCODE
             ORDER BY total_out DESC
-        """, (today, today_prefix, t_start, t_end))
+        """, (target_date, date_prefix, t_start, t_end))
 
     rows = cursor.fetchall()
 

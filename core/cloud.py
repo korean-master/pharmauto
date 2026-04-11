@@ -174,9 +174,19 @@ def fetch_units(insurance_code: str) -> list[int]:
 # ────────────────────── 도매상 셀렉터 (wholesaler_selectors) ──────────────────────
 
 def upload_selectors(domain: str, name: str, selectors: dict):
-    """도매상 셀렉터를 서버에 기여한다 (upsert)."""
+    """도매상 셀렉터를 서버에 기여한다 (upsert).
+    업로드 전 에 보안 진단을 통과해야 한다.
+    """
     if not is_enabled() or not domain:
         return
+    # 업로드 전 보안 필터
+    try:
+        from core.selector_validator import validate_selectors
+        if not validate_selectors(selectors):
+            print(f"[클라우드] 셀렉터 보안 검증 실패 — 업로드 취소 ({domain})")
+            return
+    except Exception:
+        pass
     try:
         requests.post(
             _api_url("wholesaler_selectors"),
@@ -189,6 +199,7 @@ def upload_selectors(domain: str, name: str, selectors: dict):
                 "table_sel": selectors.get("table", {}),
                 "confirm_sel": selectors.get("confirm", {}),
                 "auto_detected": selectors.get("auto_detected", False),
+                "confidence": selectors.get("confidence", "provisional"),
                 "updated_at": datetime.utcnow().isoformat(),
             },
             timeout=5,
@@ -199,6 +210,7 @@ def upload_selectors(domain: str, name: str, selectors: dict):
 
 def fetch_selectors(domain: str) -> dict | None:
     """서버에서 도매상 셀렉터를 조회한다.
+    다운로드 후 보안 필터를 반드시 통과해야 한다 (서버 오염 시나리오 차단).
 
     Returns:
         셀렉터 dict (로컬 저장 형식과 동일) 또는 None
@@ -216,15 +228,103 @@ def fetch_selectors(domain: str) -> dict | None:
         if not rows:
             return None
         row = rows[0]
-        return {
+        result = {
             "login": row.get("login_sel", {}),
             "search": row.get("search_sel", {}),
             "table": row.get("table_sel", {}),
             "confirm": row.get("confirm_sel", {}),
             "auto_detected": row.get("auto_detected", False),
+            "confidence": row.get("confidence", "provisional"),
         }
+        # 다운로드 후 보안 필터 (서버 오염 시나리오 차단 — 가장 중요)
+        try:
+            from core.selector_validator import validate_selectors
+            if not validate_selectors(result):
+                print(f"[클라우드] 다운로드 셀렉터 보안 검증 실패 — 폐기 ({domain})")
+                return None
+        except Exception:
+            pass
+        return result
     except Exception:
         return None
+
+
+
+# ────────── 도매상 이력 검색 설정 (wholesaler_history_config) ──────────
+
+def upload_history_config(wholesaler_id: str, name: str, config: dict):
+    """도매상 이력 검색 설정을 서버에 업로드한다 (upsert).
+
+    config 예시:
+    {
+        "history_url": "/MyPage/Serial",
+        "search_selectors": {"date_from": "#dtpFrom", "keyword": "#txtitem", ...},
+        "table_columns": {"drug_name": 4, "date": 0, "qty": 5, "lot": 2, ...},
+        "modal": {"has_modal": True, "close_btn": ".ui-dialog button:has-text('닫기')"},
+        "period_buttons": {"3년": "button:has-text('3년')"},
+        "notes": "행 클릭 시 모달에서 LOT 확인 가능",
+    }
+    """
+    if not is_enabled() or not wholesaler_id:
+        return
+    try:
+        requests.post(
+            _api_url("wholesaler_history_config"),
+            headers=_headers(),
+            json={
+                "wholesaler_id": wholesaler_id,
+                "name": name,
+                "config": json.dumps(config, ensure_ascii=False),
+                "updated_at": datetime.utcnow().isoformat(),
+            },
+            timeout=5,
+        )
+    except Exception:
+        pass
+
+
+def fetch_history_config(wholesaler_id: str) -> dict | None:
+    """서버에서 도매상 이력 검색 설정을 조회한다."""
+    if not is_enabled() or not wholesaler_id:
+        return None
+    try:
+        resp = requests.get(
+            _api_url("wholesaler_history_config"),
+            headers=_headers(),
+            params={"wholesaler_id": f"eq.{wholesaler_id}"},
+            timeout=5,
+        )
+        rows = resp.json()
+        if not rows:
+            return None
+        return json.loads(rows[0].get("config", "{}"))
+    except Exception:
+        return None
+
+
+def fetch_all_history_configs() -> list[dict]:
+    """서버에 등록된 모든 도매상 이력 검색 설정을 조회한다."""
+    if not is_enabled():
+        return []
+    try:
+        resp = requests.get(
+            _api_url("wholesaler_history_config"),
+            headers=_headers(),
+            params={"order": "updated_at.desc"},
+            timeout=5,
+        )
+        rows = resp.json()
+        result = []
+        for row in rows:
+            item = {
+                "wholesaler_id": row.get("wholesaler_id", ""),
+                "name": row.get("name", ""),
+            }
+            item.update(json.loads(row.get("config", "{}")))
+            result.append(item)
+        return result
+    except Exception:
+        return []
 
 
 # ────────────────────── 백그라운드 동기화 ──────────────────────

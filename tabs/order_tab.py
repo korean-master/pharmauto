@@ -31,10 +31,10 @@ from PyQt6.QtWidgets import (
 from ui.styles import (
     BLUE as _BLUE, BLUE_DARK as _BLUE_DARK,
     GREEN as _GREEN, GREEN_DARK as _GREEN_DARK,
-    RED as _RED, TEXT_SEC as _TEXT_SEC, TEXT_DISABLED,
+    RED as _RED, ORANGE as _ORANGE, TEXT_SEC as _TEXT_SEC, TEXT_DISABLED,
     CARD_FRAME, STATUS_LABEL, SUBTITLE,
     COMBO_SMALL, SPIN_BOX_SMALL,
-    btn_primary, btn_success, btn_accent, btn_order,
+    btn_primary, btn_success, btn_order,
 )
 
 CONFIG_DIR = os.path.join(os.path.dirname(__file__), "..", "config")
@@ -225,45 +225,55 @@ class FetchWorker(QThread):
             self.error.emit("DB_FALLBACK")
 
 
-class AutoOrderWorker(QThread):
-    """자동 주문 백그라운드 실행."""
+class OrderWorker(QThread):
+    """선택 약품 주문 백그라운드 실행."""
     progress = pyqtSignal(str)
     finished = pyqtSignal(list)
     error = pyqtSignal(str)
 
-    def __init__(self, order_items: list[dict], wholesaler_id: str):
+    def __init__(self, order_items: list[dict], dry_run: bool):
         super().__init__()
         self.order_items = order_items
-        self.wholesaler_id = wholesaler_id
+        self.dry_run = dry_run
 
     def run(self):
         try:
-            from core.order_engine import is_cart_only_mode, place_orders
+            from core.order_engine import place_orders
 
-            # wholesaler_id 세팅
-            for item in self.order_items:
-                item["wholesaler_id"] = self.wholesaler_id
-
-            cart_only = is_cart_only_mode()
-            mode_text = "장바구니 담기" if cart_only else "주문"
+            mode_text = "장바구니 담기" if self.dry_run else "주문"
             self.progress.emit(f"{len(self.order_items)}개 약품 {mode_text} 시작...")
 
-            results = place_orders(
+            results, retry_results = place_orders(
                 self.order_items,
                 progress_callback=lambda msg: self.progress.emit(msg),
-                dry_run=cart_only,
+                dry_run=self.dry_run,
             )
 
-            # 주문 성공 시 재고 업데이트
+            # 성공한 아이템만 재고 업데이트
             from core.inventory import update_stock_after_order
-            for r in results:
-                if r.get("success"):
-                    for item in r.get("items", []):
-                        update_stock_after_order(
-                            item["insurance_code"], item.get("qty", 0)
-                        )
 
-            self.finished.emit(results)
+            def _update_stock(item):
+                code = item.get("insurance_code", "")
+                pack_size = item.get("pack_size", 0)
+                box_qty = item.get("box_qty", 0)
+                if pack_size and box_qty:
+                    actual_qty = box_qty * pack_size
+                else:
+                    actual_qty = item.get("qty", 0)
+                if code and actual_qty > 0:
+                    update_stock_after_order(code, actual_qty)
+
+            for r in results:
+                for item in r.get("success_items", []):
+                    _update_stock(item)
+
+            # 품절 재주문 성공한 아이템도 재고 반영
+            for rr in retry_results:
+                if rr.get("success"):
+                    _update_stock(rr["item"])
+
+            # results에 retry_results 첨부해서 UI에 전달
+            self.finished.emit([results, retry_results])
         except Exception as e:
             self.error.emit(str(e))
 
@@ -293,6 +303,7 @@ class OrderTab(QWidget):
         self.drug_data = []
         self.wholesalers = _load_json("wholesalers.json")
         self.exclusions = _load_json("exclusions.json")
+        self._on_schedule_changed_callback = None
         self._init_ui()
         self._spinner = SpinnerOverlay(self)
         self.table.cellClicked.connect(self._on_cell_clicked)
@@ -323,7 +334,7 @@ class OrderTab(QWidget):
         top.addWidget(time_label)
 
         self.time_combo = QComboBox()
-        self.time_combo.addItems(["하루 전체", "오전 (09~13시)", "오후 (13~19시)"])
+        self.time_combo.addItems(["오늘 전체", "오전 (09~13시)", "오후 (13~19시)", "어제 전체"])
         self.time_combo.setMinimumWidth(150)
         top.addWidget(self.time_combo)
 
@@ -334,26 +345,71 @@ class OrderTab(QWidget):
 
         top.addStretch()
 
-        ws_label = QLabel("일괄 도매상")
+        ws_label = QLabel("기본 도매상")
         ws_label.setStyleSheet(SUBTITLE)
         top.addWidget(ws_label)
 
         self.bulk_ws_combo = QComboBox()
         self._populate_ws_combo(self.bulk_ws_combo)
         self.bulk_ws_combo.setMinimumWidth(130)
+        self._sync_bulk_ws_from_settings()
+        self.bulk_ws_combo.currentIndexChanged.connect(
+            self._on_bulk_ws_changed
+        )
         top.addWidget(self.bulk_ws_combo)
 
         bulk_btn = QPushButton("일괄 적용")
         bulk_btn.clicked.connect(self._on_bulk_apply)
         top.addWidget(bulk_btn)
 
-        self.auto_order_btn = QPushButton("자동 주문")
-        self.auto_order_btn.setStyleSheet(btn_accent())
-        self.auto_order_btn.clicked.connect(self._on_auto_order)
-        top.addWidget(self.auto_order_btn)
-
         top_card = _card(top_widget)
         layout.addWidget(top_card)
+
+        # --- 예약 자동주문 상태 카드 ---
+        sched_widget = QWidget()
+        sched_outer = QVBoxLayout(sched_widget)
+        sched_outer.setContentsMargins(4, 4, 4, 4)
+        sched_outer.setSpacing(8)
+
+        # 1행: 토글 + 상세설정 버튼
+        row1 = QHBoxLayout()
+        row1.setSpacing(12)
+
+        self.sched_toggle = QCheckBox("예약 자동주문")
+        self.sched_toggle.setStyleSheet(
+            "QCheckBox { font-size: 14px; font-weight: 700; "
+            "font-family: 'Malgun Gothic'; padding: 2px 0; }"
+        )
+        self.sched_toggle.setMinimumHeight(28)
+        self.sched_toggle.toggled.connect(self._on_sched_toggle_changed)
+        row1.addWidget(self.sched_toggle)
+
+        row1.addStretch()
+
+        self.sched_detail_btn = QPushButton("상세 설정 →")
+        self.sched_detail_btn.setStyleSheet(
+            f"QPushButton {{ color: {_BLUE}; background: transparent; "
+            f"border: none; font-size: 13px; font-weight: 600; "
+            f"font-family: 'Malgun Gothic'; padding: 4px 8px; }}"
+            f"QPushButton:hover {{ text-decoration: underline; "
+            f"color: {_BLUE_DARK}; }}"
+        )
+        row1.addWidget(self.sched_detail_btn)
+        sched_outer.addLayout(row1)
+
+        # 2행: 설정 요약 (예약 시간 / 주문확정 / 도매상 분배)
+        self.sched_summary = QLabel("")
+        self.sched_summary.setStyleSheet(
+            f"color: {_TEXT_SEC}; font-size: 12px; "
+            f"font-family: 'Malgun Gothic'; line-height: 1.5;"
+        )
+        self.sched_summary.setWordWrap(True)
+        sched_outer.addWidget(self.sched_summary)
+
+        sched_card = _card(sched_widget)
+        layout.addWidget(sched_card)
+
+        self._refresh_schedule_summary()
 
         # --- 약품 테이블 카드 ---
         # [선택][약품명][선호규격][주문타입][오늘사용][현재재고][추천주문량][도매상][자동주문 제외]
@@ -375,7 +431,11 @@ class OrderTab(QWidget):
         header.setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(7, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(8, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(0, 40)
+        self.table.setColumnWidth(0, 50)
+
+        # 헤더 "선택" 클릭 시 전체 선택/해제 토글
+        self._all_checked = True
+        header.sectionClicked.connect(self._on_header_clicked)
         self.table.setColumnWidth(2, 100)
         self.table.setColumnWidth(3, 100)
         self.table.setColumnWidth(4, 80)
@@ -400,15 +460,7 @@ class OrderTab(QWidget):
 
         bottom.addStretch()
 
-        select_all_btn = QPushButton("전체 선택")
-        select_all_btn.clicked.connect(self._on_select_all)
-        bottom.addWidget(select_all_btn)
-
-        deselect_btn = QPushButton("전체 해제")
-        deselect_btn.clicked.connect(self._on_deselect_all)
-        bottom.addWidget(deselect_btn)
-
-        self.order_btn = QPushButton("모두 주문하기")
+        self.order_btn = QPushButton("선택한 약품 주문하기")
         self.order_btn.setStyleSheet(btn_order())
         self.order_btn.clicked.connect(self._on_order)
         bottom.addWidget(self.order_btn)
@@ -452,7 +504,7 @@ class OrderTab(QWidget):
         self.history_table.setColumnWidth(3, 70)
         self.history_table.setColumnWidth(4, 100)
         self.history_table.setColumnWidth(5, 100)
-        self.history_table.setColumnWidth(6, 90)
+        self.history_table.setColumnWidth(6, 110)
         self.history_table.setMinimumHeight(300)
         history_lay.addWidget(self.history_table)
 
@@ -515,7 +567,7 @@ class OrderTab(QWidget):
 
     def _time_range_key(self) -> str:
         idx = self.time_combo.currentIndex()
-        return ["all", "morning", "afternoon"][idx]
+        return ["all", "morning", "afternoon", "yesterday"][idx]
 
     # ─────────────── 처방 데이터 조회 ───────────────
 
@@ -555,7 +607,7 @@ class OrderTab(QWidget):
 
         self.drug_data = filtered
         self._register_new_drugs(filtered)
-        self._populate_table()
+        self._populate_table(reset_checks=True)
         self.status_label.setText(
             f"총 {len(filtered)}개 약품 조회됨 (제외 {len(data) - len(filtered)}건)"
         )
@@ -610,8 +662,34 @@ class OrderTab(QWidget):
 
     # ─────────────── 테이블 ───────────────
 
-    def _populate_table(self):
+    def _populate_table(self, reset_checks: bool = False):
         from core.inventory import get_current_stock, get_drug_config
+
+        # 처방 데이터 새로 조회 시 체크 리셋, 설정 변경 등은 보존
+        saved_checks = {}
+        if not reset_checks:
+            for row in range(self.table.rowCount()):
+                widget = self.table.cellWidget(row, 0)
+                if widget and row < len(self.drug_data):
+                    cb = widget.findChild(QCheckBox)
+                    if cb:
+                        code = self.drug_data[row]["insurance_code"]
+                        saved_checks[code] = cb.isChecked()
+
+        _default_ws = _load_json("settings.json").get("default_wholesaler", "")
+
+        # 오늘 주문 이력 — 상태별 분리
+        from core.order_engine import get_order_history
+        today_orders = get_order_history(1)
+        order_status_map = {}  # code → "ordered" / "cart_only" / "out_of_stock" / "failed"
+        for oh in today_orders:
+            c = oh.get("insurance_code", "")
+            s = oh.get("status", "")
+            if c:
+                # 같은 약품이 여러 번 있으면 성공이 우선
+                existing = order_status_map.get(c, "")
+                if s in ("ordered", "cart_only") or not existing:
+                    order_status_map[c] = s
 
         self.table.setRowCount(len(self.drug_data))
         for row, item in enumerate(self.drug_data):
@@ -648,10 +726,22 @@ class OrderTab(QWidget):
             # 적정재고에서 재고 충분하면 주문 불필요
             stock_sufficient = (order_type == "stock" and recommended == 0)
             is_manual = (order_type == "manual")
+            order_st = order_status_map.get(code, "")
+            order_success = order_st in ("ordered", "cart_only")
+            order_failed = order_st in ("failed", "out_of_stock")
 
             # 체크박스
+            # 재고 충분/수동/주문완료는 항상 해제 (saved_checks보다 우선)
             cb = QCheckBox()
-            cb.setChecked(not stock_sufficient and not is_manual)
+            if stock_sufficient or is_manual:
+                cb.setChecked(False)
+            elif order_success:
+                cb.setChecked(False)
+            elif code in saved_checks:
+                cb.setChecked(saved_checks[code])
+            else:
+                cb.setChecked(True)
+            cb.setFixedSize(20, 20)
             cb_widget = QWidget()
             cb_layout = QHBoxLayout(cb_widget)
             cb_layout.addWidget(cb)
@@ -662,11 +752,15 @@ class OrderTab(QWidget):
             # 약품명
             name_item = QTableWidgetItem(item["drug_name"])
             name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            name_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+            )
             self.table.setItem(row, 1, name_item)
 
             # 선호규격 (클릭 가능)
             spec_item = QTableWidgetItem(spec_text)
             spec_item.setFlags(spec_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            spec_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
             spec_item.setToolTip("클릭하여 설정 변경")
             if not cfg:
                 spec_item.setForeground(QColor(_BLUE))
@@ -674,24 +768,37 @@ class OrderTab(QWidget):
             self.table.setItem(row, 2, spec_item)
 
             # 주문타입
-            type_text = ORDER_TYPE_LABELS.get(order_type, "미설정")
+            if order_success:
+                type_text = "장바구니완료" if order_st == "cart_only" else "주문완료"
+            elif order_st == "out_of_stock":
+                type_text = "품절"
+            elif order_failed:
+                type_text = "주문실패"
+            else:
+                type_text = ORDER_TYPE_LABELS.get(order_type, "미설정")
             type_item = QTableWidgetItem(type_text)
             type_item.setFlags(type_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            type_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            if not cfg:
+            type_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
+            if order_success:
+                type_item.setForeground(QColor(_GREEN) if order_st == "ordered" else QColor(_BLUE))
+            elif order_st == "out_of_stock":
+                type_item.setForeground(QColor(_ORANGE))
+            elif order_failed:
+                type_item.setForeground(QColor(_RED))
+            elif not cfg:
                 type_item.setForeground(QColor(_RED))
             self.table.setItem(row, 3, type_item)
 
             # 오늘 사용
             used_item = QTableWidgetItem(str(today_qty))
             used_item.setFlags(used_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            used_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            used_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
             self.table.setItem(row, 4, used_item)
 
             # 현재 재고 (클릭 가능)
             stock_item = QTableWidgetItem(str(current_stock))
             stock_item.setFlags(stock_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            stock_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            stock_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
             stock_item.setToolTip("클릭하여 재고 수동 입력")
             if cfg and order_type == "stock":
                 target = cfg.get("target_stock", 0)
@@ -718,6 +825,10 @@ class OrderTab(QWidget):
             ws_combo.setMinimumHeight(34)
             ws_combo.setStyleSheet(COMBO_SMALL)
             self._populate_ws_combo(ws_combo)
+            if _default_ws:
+                idx = ws_combo.findData(_default_ws)
+                if idx >= 0:
+                    ws_combo.setCurrentIndex(idx)
             self.table.setCellWidget(row, 7, ws_combo)
 
             # 자동주문 제외
@@ -732,7 +843,7 @@ class OrderTab(QWidget):
             )
             self.table.setCellWidget(row, 8, exc_combo)
 
-            self.table.setRowHeight(row, 44)
+            self.table.setRowHeight(row, 48)
 
             # 재고 충분 시 행 회색 처리
             if stock_sufficient:
@@ -814,19 +925,21 @@ class OrderTab(QWidget):
                 )
                 return
 
+            # dialog 내에서 재고가 변경됐을 수 있으므로 최신 cfg를 다시 읽는다
+            fresh_cfg = get_drug_config(code) or cfg
+
             new_cfg = {
-                **cfg,
+                **fresh_cfg,
                 "name": drug_name,
                 "order_type": dlg.result_config["order_type"],
                 "preferred_unit": dlg.result_config["preferred_unit"],
                 "unit_options": dlg.result_config["unit_options"] or unit_options,
                 "target_stock": dlg.result_config["target_stock"],
                 "unit": dlg.result_config.get("unit", "정"),
-                "tracking_start_date": cfg.get(
+                "tracking_start_date": fresh_cfg.get(
                     "tracking_start_date", datetime.now().strftime("%Y-%m-%d")
                 ),
             }
-            # current_stock, base_stock 등 재고 관련 필드는 기존 값 유지
             set_drug_config(code, new_cfg)
             self._populate_table()
 
@@ -973,7 +1086,32 @@ class OrderTab(QWidget):
         self.table.removeRow(actual_row)
         self.status_label.setText(f"'{drug_name}' {period} 제외 처리됨 (남은 {len(self.drug_data)}개)")
 
-    # ─────────────── 일괄 도매상 적용 ───────────────
+    # ─────────────── 기본 도매상 연동 ───────────────
+
+    def _sync_bulk_ws_from_settings(self):
+        """settings.json의 default_wholesaler를 bulk_ws_combo에 반영한다."""
+        settings = _load_json("settings.json")
+        default_ws = settings.get("default_wholesaler", "")
+        if default_ws:
+            idx = self.bulk_ws_combo.findData(default_ws)
+            if idx >= 0:
+                self.bulk_ws_combo.blockSignals(True)
+                self.bulk_ws_combo.setCurrentIndex(idx)
+                self.bulk_ws_combo.blockSignals(False)
+
+    def _on_bulk_ws_changed(self):
+        """기본 도매상 콤보 변경 → settings.json 저장 + 설정 탭 동기화."""
+        wid = self.bulk_ws_combo.currentData()
+        if not wid:
+            return
+        settings = _load_json("settings.json")
+        settings["default_wholesaler"] = wid
+        _save_json("settings.json", settings)
+        # 예약 요약도 갱신
+        self._refresh_schedule_summary()
+        # 설정 탭 동기화
+        if self._on_schedule_changed_callback:
+            self._on_schedule_changed_callback()
 
     def _on_bulk_apply(self):
         wid = self.bulk_ws_combo.currentData()
@@ -988,19 +1126,17 @@ class OrderTab(QWidget):
 
     # ─────────────── 전체 선택/해제 ───────────────
 
-    def _on_select_all(self):
-        self._set_all_checked(True)
-
-    def _on_deselect_all(self):
-        self._set_all_checked(False)
-
-    def _set_all_checked(self, checked: bool):
+    def _on_header_clicked(self, section: int):
+        """헤더 '선택' 컬럼 클릭 시 전체 선택/해제 토글."""
+        if section != 0:
+            return
+        self._all_checked = not self._all_checked
         for row in range(self.table.rowCount()):
             widget = self.table.cellWidget(row, 0)
             if widget:
                 cb = widget.findChild(QCheckBox)
                 if cb:
-                    cb.setChecked(checked)
+                    cb.setChecked(self._all_checked)
 
     # ─────────────── 수동 주문 ───────────────
 
@@ -1015,15 +1151,16 @@ class OrderTab(QWidget):
             ws_name = item["wholesaler_name"]
             summary.setdefault(ws_name, []).append(item)
 
-        msg = "다음과 같이 주문하시겠습니까?\n\n"
+        from core.order_engine import is_cart_only_mode
+        order_mode = "장바구니 담기" if is_cart_only_mode() else "자동 주문 확정"
+        msg = f"다음과 같이 주문하시겠습니까? ({order_mode})\n\n"
         for ws_name, ws_items in summary.items():
             msg += f"[{ws_name}]\n"
             for it in ws_items:
-                msg += f"  - {it['drug_name']} {it['qty']}개\n"
+                msg += f"  - {it['drug_name']}\n"
             msg += "\n"
 
-        total = sum(it["qty"] for it in items)
-        msg += f"총 {len(items)}개 품목 / {total}개"
+        msg += f"총 {len(items)}개 품목"
 
         reply = QMessageBox.question(
             self, "주문 확인", msg,
@@ -1037,16 +1174,77 @@ class OrderTab(QWidget):
         if items is None:
             return  # 사용자가 취소함
 
-        from core.order_engine import is_cart_only_mode, place_orders
+        from core.order_engine import is_cart_only_mode
 
-        results = place_orders(items, dry_run=is_cart_only_mode())
+        self.order_btn.setEnabled(False)
+        self.fetch_btn.setEnabled(False)
+        self._spinner.show_progress("처리 중...", 0)
+        self._order_percent = 0
+        self._order_done = False
+        if hasattr(self, '_pending_error'):
+            del self._pending_error
+        if hasattr(self, '_pending_results'):
+            del self._pending_results
 
-        failed_items = []
-        for r in results:
-            if not r["success"]:
-                failed_items.extend(r["items"])
+        # 0→95까지 일정하게 올라감
+        self._progress_timer = QTimer()
+        self._progress_timer.timeout.connect(self._tick_progress)
+        self._progress_timer.start(300)
 
-        self._show_order_results(results, [])
+        self._order_worker = OrderWorker(items, dry_run=is_cart_only_mode())
+        self._order_worker.finished.connect(self._on_order_finished)
+        self._order_worker.error.connect(self._on_order_error)
+        self._order_worker.start()
+
+    def _tick_progress(self):
+        p = self._order_percent
+        if self._order_done:
+            # 완료 신호 후 100%까지 빠르게
+            p = min(p + 5, 100)
+        elif p < 95:
+            p += 1
+        self._order_percent = p
+        self._spinner.set_progress(p, "처리 중...")
+        if p >= 100:
+            self._progress_timer.stop()
+            if hasattr(self, '_pending_error'):
+                QTimer.singleShot(300, self._show_order_error_final)
+            else:
+                QTimer.singleShot(300, self._show_order_final)
+
+    def _on_order_finished(self, results: list):
+        self._pending_results = results
+        self._order_done = True
+
+    def _show_order_final(self):
+        if hasattr(self, '_progress_timer'):
+            self._progress_timer.stop()
+        self.order_btn.setEnabled(True)
+        self.fetch_btn.setEnabled(True)
+        self._spinner.hide_spinner()
+        data = getattr(self, '_pending_results', [])
+        # data = [results, retry_results]
+        if data and isinstance(data[0], list):
+            results, retry_results = data[0], data[1] if len(data) > 1 else []
+        else:
+            results, retry_results = data, []
+        self._show_order_results(results, retry_results)
+        self._populate_table()
+        self._load_order_history()
+
+    def _on_order_error(self, msg: str):
+        self._pending_error = msg
+        self._order_done = True
+
+    def _show_order_error_final(self):
+        if hasattr(self, '_progress_timer'):
+            self._progress_timer.stop()
+        self.order_btn.setEnabled(True)
+        self.fetch_btn.setEnabled(True)
+        self._spinner.hide_spinner()
+        msg = getattr(self, '_pending_error', '')
+        self.status_label.setText(f"주문 실패: {msg}")
+        QMessageBox.critical(self, "주문 오류", f"오류가 발생했습니다:\n{msg}")
 
     def _collect_selected_items(self) -> list[dict]:
         items = []
@@ -1061,8 +1259,11 @@ class OrderTab(QWidget):
             qty_spin = self.table.cellWidget(row, 6)
             ws_combo = self.table.cellWidget(row, 7)
 
-            if not qty_spin or qty_spin.value() == 0:
+            if not qty_spin:
                 continue
+            qty = qty_spin.value()
+            if qty == 0:
+                qty = 1  # 체크했으면 최소 1개 주문
 
             data = self.drug_data[row]
             from core.inventory import get_drug_config as _gdc
@@ -1071,7 +1272,7 @@ class OrderTab(QWidget):
                 "insurance_code": data["insurance_code"],
                 "drug_name": data["drug_name"],
                 "spec": data.get("spec", ""),
-                "qty": qty_spin.value(),
+                "qty": qty,
                 "preferred_unit": _cfg.get("preferred_unit", 0) if _cfg else 0,
                 "wholesaler_id": ws_combo.currentData() if ws_combo else "",
                 "wholesaler_name": ws_combo.currentText() if ws_combo else "",
@@ -1079,140 +1280,177 @@ class OrderTab(QWidget):
         return items
 
     def _show_order_results(self, results: list, retry_results: list):
-        msg = "=== 주문 결과 ===\n\n"
+        success_items = []
+        failed_items = []
+        oos_items = []
         for r in results:
-            icon = "v" if r["success"] else "X"
-            msg += f"[{icon}] {r['wholesaler_name']}: {len(r['items'])}건 - {r['message']}\n"
+            for it in r.get("success_items", []):
+                success_items.append(it)
+            for it in r.get("failed_items", []):
+                failed_items.append(it)
+            for it in r.get("oos_items", []):
+                oos_items.append(it)
 
-        QMessageBox.information(self, "주문 결과", msg)
-        self.status_label.setText(f"주문 완료 - {len(results)}개 도매상 처리됨")
-        self._load_order_history()
+        msg = ""
 
-    # ─────────────── 자동 주문 ───────────────
+        if success_items:
+            msg += f"주문 완료 — {len(success_items)}건\n"
+            for it in success_items:
+                msg += f"  {it.get('drug_name', '')}\n"
+            msg += "\n"
 
-    def _on_auto_order(self):
-        ws_id = self.bulk_ws_combo.currentData()
-        ws_name = self.bulk_ws_combo.currentText()
-        if not ws_id:
-            QMessageBox.warning(self, "알림", "도매상을 선택하세요.")
-            return
+        # 품절 재주문 결과
+        retry_ok = [rr for rr in retry_results if rr.get("success")]
+        retry_fail = [rr for rr in retry_results if not rr.get("success")]
 
-        # 미설정 약품 체크
-        from core.inventory import is_configured
-        unconfigured = [d for d in self.drug_data if not is_configured(d["insurance_code"])]
-        if unconfigured:
-            names = "\n".join(f"  - {d['drug_name']}" for d in unconfigured[:10])
-            extra = f"\n  ... 외 {len(unconfigured) - 10}개" if len(unconfigured) > 10 else ""
-            reply = QMessageBox.question(
-                self, "미설정 약품 있음",
-                f"설정되지 않은 약품 {len(unconfigured)}건이 있습니다.\n{names}{extra}\n\n"
-                f"미설정 약품은 '즉시 주문' 방식으로 처리됩니다.\n계속하시겠습니까?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
-                return
+        if retry_ok:
+            msg += f"품절 → 대체 주문 성공 — {len(retry_ok)}건\n"
+            for rr in retry_ok:
+                it = rr["item"]
+                msg += f"  {it.get('drug_name', '')} ({rr['original_ws']} → {rr['retry_ws']})\n"
+            msg += "\n"
 
-        # 주문 항목 수집
-        from core.inventory import calc_order_qty, get_drug_config
+        if retry_fail:
+            msg += f"품절 → 대체 주문 실패 — {len(retry_fail)}건\n"
+            for rr in retry_fail:
+                it = rr["item"]
+                msg += f"  {it.get('drug_name', '')} (모든 도매상 품절)\n"
+            msg += "\n"
 
-        order_items = []
-        for item in self.drug_data:
-            code = item["insurance_code"]
-            today_qty = int(item["qty"])
-            order_qty = calc_order_qty(code, today_qty)
+        # 일반 실패 (품절 제외)
+        oos_codes = set(it.get("insurance_code", "") for it in oos_items)
+        normal_fail = [it for it in failed_items
+                       if it.get("insurance_code", "") not in oos_codes]
+        if normal_fail:
+            msg += f"주문 실패 — {len(normal_fail)}건\n"
+            for it in normal_fail:
+                msg += f"  {it.get('drug_name', it.get('insurance_code', ''))}\n"
+            msg += "\n"
 
-            cfg = get_drug_config(code)
-            if cfg and cfg.get("order_type") == "manual":
-                continue
-            if order_qty <= 0:
-                continue
+        if not success_items and not failed_items and not retry_results:
+            msg = "처리된 항목이 없습니다.\n"
 
-            order_items.append({
-                "insurance_code": code,
-                "drug_name": item["drug_name"],
-                "spec": item.get("spec", ""),
-                "qty": order_qty,
-                "preferred_unit": cfg.get("preferred_unit", 0) if cfg else 0,
-            })
-
-        if not order_items:
-            QMessageBox.information(self, "알림", "주문할 약품이 없습니다.\n(재고 충분 또는 수동 주문만 있음)")
-            return
-
-        time_label = self.time_combo.currentText()
-        reply = QMessageBox.question(
-            self, "자동 주문 확인",
-            f"시간대: {time_label}\n도매상: {ws_name}\n"
-            f"주문 항목: {len(order_items)}개\n\n진행하시겠습니까?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        total_ok = len(success_items) + len(retry_ok)
+        total_fail = len(normal_fail) + len(retry_fail)
+        self.status_label.setText(
+            f"완료 {total_ok}건 / 실패 {total_fail}건"
         )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
 
-        self.auto_order_btn.setEnabled(False)
-        self.fetch_btn.setEnabled(False)
-        self.order_btn.setEnabled(False)
-        self._spinner.show_with_message("처리 중...")
-        self.status_label.setText("자동 주문 준비 중...")
+        # 커스텀 다이얼로그 (더 넓게)
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("주문 결과")
+        if total_fail > 0 and total_ok == 0:
+            dlg.setIcon(QMessageBox.Icon.Warning)
+        elif total_fail > 0:
+            dlg.setIcon(QMessageBox.Icon.Information)
+        else:
+            dlg.setIcon(QMessageBox.Icon.Information)
+        dlg.setText(msg)
+        dlg.setMinimumWidth(400)
+        dlg.exec()
 
-        self._auto_worker = AutoOrderWorker(order_items, ws_id)
-        self._auto_worker.progress.connect(self._on_auto_progress)
-        self._auto_worker.finished.connect(self._on_auto_finished)
-        self._auto_worker.error.connect(self._on_auto_error)
-        self._auto_worker.start()
-
-    def _on_auto_progress(self, msg: str):
-        self.status_label.setText(msg)
-        self._spinner.set_message(msg)
-
-    def _on_auto_finished(self, results: list):
-        self.auto_order_btn.setEnabled(True)
-        self.fetch_btn.setEnabled(True)
-        self.order_btn.setEnabled(True)
-        self._spinner.hide_spinner()
-
-        if not results:
-            self.status_label.setText("주문할 약품이 없습니다")
-            return
-
-        total_items = 0
-        total_failed = 0
-        failed_names = []
-
-        for r in results:
-            total_items += len(r.get("items", []))
-            fails = r.get("failed_items", [])
-            total_failed += len(fails)
-            for f in fails:
-                failed_names.append(f.get("insurance_code", ""))
-
-        success_count = total_items - total_failed
-        self.status_label.setText(f"자동 주문 완료 - {success_count}개 성공, {total_failed}개 실패")
-
-        # 테이블 + 주문 내역 갱신
-        self._populate_table()
         self._load_order_history()
 
-        if total_failed > 0:
-            fail_text = "\n".join(f"  - {n}" for n in failed_names)
-            QMessageBox.warning(
-                self, "자동 주문 결과",
-                f"주문 완료: {success_count}개 성공\n\n"
-                f"실패 항목 ({total_failed}건):\n{fail_text}",
+    # ─────────────── 예약 자동주문 연동 ───────────────
+
+    def _refresh_schedule_summary(self):
+        """settings.json에서 예약/주문 설정을 읽어 요약 텍스트 + 토글 상태를 갱신한다."""
+        settings = _load_json("settings.json")
+        ws_map = _load_json("wholesalers.json")
+        enabled = settings.get("schedule_enabled", False)
+
+        # 토글 동기화 (시그널 루프 방지)
+        self.sched_toggle.blockSignals(True)
+        self.sched_toggle.setChecked(enabled)
+        self.sched_toggle.blockSignals(False)
+
+        # ── 1) 예약 시간 ──
+        if not enabled:
+            time_text = "예약 꺼짐"
+        else:
+            mode = settings.get("schedule_mode", "multiple")
+            if mode == "once":
+                once_time = settings.get("schedule_once_time", "18:30")
+                time_text = f"일 1회 {once_time}"
+            else:
+                times = settings.get(
+                    "schedule_multi_times",
+                    settings.get("order_schedule_times", ["13:00", "18:30"]),
+                )
+                enabled_times = []
+                for t in times:
+                    if isinstance(t, dict):
+                        if t.get("enabled", True):
+                            enabled_times.append(t.get("time", "12:00"))
+                    else:
+                        enabled_times.append(t)
+                if enabled_times:
+                    time_text = f"일 {len(enabled_times)}회 — {', '.join(enabled_times)}"
+                else:
+                    time_text = "활성화된 시간 없음"
+
+        # ── 2) 주문 확정 방식 ──
+        confirm_mode = settings.get("order_confirm_mode", "auto")
+        confirm_text = "장바구니만 담기" if confirm_mode == "cart_only" else "자동 주문 확정"
+
+        # ── 3) 도매상 분배 ──
+        split_mode = settings.get("order_split_mode", "single")
+        if split_mode == "even":
+            split_ws_ids = settings.get("order_split_wholesalers", [])
+            ratios = settings.get("order_split_ratios", {})
+            if split_ws_ids:
+                parts = []
+                for wid in split_ws_ids:
+                    name = ws_map.get(wid, {}).get("name", wid)
+                    r = ratios.get(wid, 5)
+                    parts.append(f"{name}({r})")
+                split_text = f"균등 분배 — {' : '.join(parts)}"
+            else:
+                split_text = "균등 분배 (도매상 미지정)"
+        else:
+            default_ws = settings.get("default_wholesaler", "")
+            ws_name = ws_map.get(default_ws, {}).get("name", default_ws) if default_ws else "미지정"
+            split_text = f"단일 도매상 — {ws_name}"
+
+        # ── 조합 ──
+        summary = f"{time_text}  |  {confirm_text}  |  {split_text}"
+        self.sched_summary.setText(summary)
+
+        if enabled:
+            self.sched_summary.setStyleSheet(
+                f"color: {_BLUE}; font-size: 12px; font-weight: 600; "
+                f"font-family: 'Malgun Gothic';"
             )
         else:
-            QMessageBox.information(
-                self, "자동 주문 완료",
-                f"총 {success_count}개 품목 주문 완료!",
+            self.sched_summary.setStyleSheet(
+                f"color: {_TEXT_SEC}; font-size: 12px; "
+                f"font-family: 'Malgun Gothic';"
             )
 
-    def _on_auto_error(self, msg: str):
-        self.auto_order_btn.setEnabled(True)
-        self.fetch_btn.setEnabled(True)
-        self.order_btn.setEnabled(True)
-        self._spinner.hide_spinner()
-        self.status_label.setText(f"자동 주문 실패: {msg}")
-        QMessageBox.critical(self, "자동 주문 오류", f"오류가 발생했습니다:\n{msg}")
+        # 기본 도매상 콤보도 동기화
+        self._sync_bulk_ws_from_settings()
+
+    def _on_sched_toggle_changed(self, checked: bool):
+        """자동주문 탭에서 토글 변경 → settings.json 저장 + 요약 갱신."""
+        settings = _load_json("settings.json")
+        settings["schedule_enabled"] = checked
+        _save_json("settings.json", settings)
+        self._refresh_schedule_summary()
+
+        if checked:
+            QMessageBox.information(
+                self,
+                "예약 자동주문 켜짐",
+                "지금부터 예약 자동주문이 실행됩니다.\n\n"
+                "설정 탭에서 설정된 예약 자동주문 시간에\n"
+                "설정된 주문 확정 방식으로 자동 실행됩니다.\n\n"
+                "설정을 바꾸고 싶으실 경우,\n"
+                "설정 탭에서 변경하시면 바로 적용됩니다.",
+            )
+
+        # 설정 탭이 이미 로드되어 있으면 거기도 동기화
+        if self._on_schedule_changed_callback:
+            self._on_schedule_changed_callback()
 
     def _load_order_history(self):
         """주문 내역을 로드한다."""
@@ -1261,8 +1499,14 @@ class OrderTab(QWidget):
                     if status == "ordered":
                         item.setText("주문완료")
                         item.setForeground(QColor(_GREEN))
+                    elif status == "cart_only":
+                        item.setText("장바구니완료")
+                        item.setForeground(QColor(_BLUE))
+                    elif status == "out_of_stock":
+                        item.setText("품절")
+                        item.setForeground(QColor(_ORANGE))
                     elif status == "failed":
-                        item.setText("실패")
+                        item.setText("주문실패")
                         item.setForeground(QColor(_RED))
                 self.history_table.setItem(row, col, item)
             self.history_table.setRowHeight(row, 38)

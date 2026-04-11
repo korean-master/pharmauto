@@ -170,7 +170,17 @@ class PharmAutoWindow(QMainWindow):
         self.job_tab = JobTab()
         self.board_tab = BoardTab()
         self.settings_tab = SettingsTab(
-            on_wholesaler_changed=self.order_tab.reload_wholesalers
+            on_wholesaler_changed=self.order_tab.reload_wholesalers,
+            on_schedule_changed=self.order_tab._refresh_schedule_summary,
+        )
+
+        # 자동주문 탭 → 설정 탭 연동
+        def _sync_settings_tab():
+            self.settings_tab._load_schedule_settings()
+            self.settings_tab._load_split_settings()
+        self.order_tab._on_schedule_changed_callback = _sync_settings_tab
+        self.order_tab.sched_detail_btn.clicked.connect(
+            self._go_to_schedule_settings
         )
 
         self.tabs.addTab(self.order_tab, "  자동 주문  ")
@@ -183,12 +193,23 @@ class PharmAutoWindow(QMainWindow):
         self.tabs.currentChanged.connect(self._on_tab_changed)
         self.setCentralWidget(self.tabs)
 
+    def _go_to_schedule_settings(self):
+        """'상세 설정 →' 클릭 시 설정 탭으로 이동 + 예약 설정 카드로 스크롤."""
+        settings_index = self.tabs.indexOf(self.settings_tab)
+        self.tabs.setCurrentIndex(settings_index)
+        self.settings_tab.scroll_to_schedule()
+
     def _on_tab_changed(self, index: int):
         widget = self.tabs.widget(index)
         if widget is self.settings_tab:
             # 약품 목록(무거움)은 리로드 안 함. 설정값만 갱신.
             self.settings_tab._load_db_settings()
             self.settings_tab._load_schedule_settings()
+            self.settings_tab._load_split_settings()
+            self.settings_tab._load_exclusions()
+        elif widget is self.order_tab:
+            # 설정 탭에서 변경했을 수 있으니 요약 갱신
+            self.order_tab._refresh_schedule_summary()
 
     def _init_scheduler(self):
         from core.scheduler import OrderScheduler
@@ -297,6 +318,10 @@ def main():
 
     from core.cloud import start_background_sync
     start_background_sync()
+
+    # 주문 이력 ↔ 재고 불일치 자동 보정
+    from core.inventory import sync_stock_with_order_history
+    sync_stock_with_order_history()
 
     window = PharmAutoWindow()
     window.show()
