@@ -278,7 +278,26 @@ def _check_and_apply_update(app: QApplication):
     # 업데이트 성공 시 restart_app()으로 프로세스 교체되므로 여기에 도달하면 실패한 것
 
 
+def _is_already_running() -> bool:
+    """Named Mutex로 이미 실행 중인 인스턴스가 있는지 확인한다."""
+    import ctypes
+    kernel32 = ctypes.windll.kernel32
+    mutex = kernel32.CreateMutexW(None, False, "PharmAuto_SingleInstance_Mutex")
+    # ERROR_ALREADY_EXISTS = 183
+    return kernel32.GetLastError() == 183
+
+
 def main():
+    # DPI 스케일링 대응
+    os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
+
+    # 단일 인스턴스 보장
+    if _is_already_running():
+        from PyQt6.QtWidgets import QApplication, QMessageBox
+        _app = QApplication(sys.argv)
+        QMessageBox.warning(None, "PharmAuto", "이미 실행 중입니다.")
+        sys.exit(0)
+
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 

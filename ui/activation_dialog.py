@@ -17,7 +17,7 @@ class ActivationDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("PharmAuto 활성화")
-        self.setFixedSize(460, 380)
+        self.setMinimumSize(460, 380)
         self.setWindowFlags(
             Qt.WindowType.Dialog
             | Qt.WindowType.WindowCloseButtonHint
@@ -26,17 +26,19 @@ class ActivationDialog(QDialog):
         self.setStyleSheet("QDialog { background: white; }")
         self._activated = False
         self._init_ui()
+        self.adjustSize()
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setSpacing(16)
-        layout.setContentsMargins(40, 36, 40, 32)
+        layout.setSpacing(18)
+        layout.setContentsMargins(44, 40, 44, 36)
 
         title = QLabel("PharmAuto")
         title.setStyleSheet(
             "font-size: 24px; font-weight: 700; color: #4B6BFB; "
             "font-family: 'Malgun Gothic';"
         )
+        title.setMinimumHeight(36)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
 
@@ -44,6 +46,7 @@ class ActivationDialog(QDialog):
         subtitle.setStyleSheet(
             "font-size: 13px; color: #6B7280; font-family: 'Malgun Gothic';"
         )
+        subtitle.setMinimumHeight(22)
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(subtitle)
 
@@ -55,6 +58,7 @@ class ActivationDialog(QDialog):
             "font-size: 13px; font-weight: 600; color: #1A1A2E; "
             "font-family: 'Malgun Gothic';"
         )
+        code_label.setMinimumHeight(22)
         layout.addWidget(code_label)
 
         self._code_input = QLineEdit()

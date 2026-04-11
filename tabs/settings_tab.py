@@ -821,29 +821,53 @@ class SettingsTab(QWidget):
                 self._wid = wid
                 self._data = data
 
+            def _write_log(self, msg: str):
+                """연동 테스트 로그를 파일에 기록한다."""
+                from datetime import datetime
+                log_dir = os.path.join(
+                    os.path.dirname(__file__), "..", "data"
+                )
+                os.makedirs(log_dir, exist_ok=True)
+                log_path = os.path.join(log_dir, "ws_test_log.txt")
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"[{timestamp}] {msg}\n")
+                print(msg)
+
             def run(self):
                 import asyncio
 
+                self._write_log(f"=== {self._wid} 연동 테스트 시작 ===")
+
                 # ID/PW 복호화
-                from core.crypto import decrypt_dict_fields
-                config = decrypt_dict_fields(
-                    dict(self._data), ["id", "pw"]
-                )
+                try:
+                    from core.crypto import decrypt_dict_fields
+                    config = decrypt_dict_fields(
+                        dict(self._data), ["id", "pw"]
+                    )
+                    self._write_log(f"  복호화 완료: id={config.get('id', '')[:3]}***, url={config.get('url', '')}")
+                except Exception as e:
+                    self._write_log(f"  복호화 실패: {e}")
+                    self.done.emit(self._row, self._wid, f"복호화 오류: {e}")
+                    return
 
                 # 1단계: URL 접속 확인
                 try:
                     import requests as _req
                     resp = _req.get(config["url"], timeout=5, allow_redirects=True)
+                    self._write_log(f"  URL 접속: {resp.status_code}")
                     if resp.status_code >= 500:
-                        self.done.emit(self._row, self._wid, "사이트 오류")
+                        self.done.emit(self._row, self._wid, f"사이트 오류 ({resp.status_code})")
                         return
-                except Exception:
-                    self.done.emit(self._row, self._wid, "접속 불가")
+                except Exception as e:
+                    self._write_log(f"  URL 접속 실패: {e}")
+                    self.done.emit(self._row, self._wid, f"접속 불가: {type(e).__name__}")
                     return
 
                 # 2단계: 자가 치유 루프 (최대 4회 재분석→재시도)
                 MAX_ATTEMPTS = 4
                 last_status = "연동 오류"
+                last_detail = ""
 
                 try:
                     from core.order_engine import _get_wholesaler_class
@@ -855,23 +879,23 @@ class SettingsTab(QWidget):
                         ws_class = GenericWholesaler
                         config["_wid"] = self._wid
 
+                    self._write_log(f"  클래스: {'Generic' if is_generic else ws_class.__name__}")
+
                     for attempt in range(MAX_ATTEMPTS):
-                        print(f"[자가치유] {self._wid} 시도 {attempt + 1}/{MAX_ATTEMPTS}")
+                        self._write_log(f"  시도 {attempt + 1}/{MAX_ATTEMPTS}")
 
                         if is_generic:
                             if attempt > 0:
-                                # 이전 시도 실패 → 셀렉터 캐시 초기화 후 재분석
-                                print(f"[자가치유] {self._wid} 셀렉터 초기화 → AI 재분석 중...")
+                                self._write_log(f"  셀렉터 초기화 → 재분석...")
                                 from core.selector_store import delete_selectors
                                 delete_selectors(self._wid)
                                 ws_analyze = ws_class(config)
                                 asyncio.run(ws_analyze.analyze_site(headless=True))
                             else:
-                                # 0회차: 저장된 셀렉터가 없거나 불완전할 때만 분석
                                 from core.selector_store import load_selectors
                                 cur_sel = load_selectors(self._wid)
                                 if not cur_sel or not cur_sel.get("auto_detected"):
-                                    print(f"[자가치유] {self._wid} 셀렉터 분석 필요...")
+                                    self._write_log(f"  셀렉터 없음 → 사이트 분석...")
                                     ws_analyze = ws_class(config)
                                     asyncio.run(ws_analyze.analyze_site(headless=True))
 
@@ -881,7 +905,7 @@ class SettingsTab(QWidget):
 
                         if result["success"]:
                             last_status = "정상"
-                            print(f"[자가치유] {self._wid} 성공! (총 {attempt + 1}회 시도)")
+                            self._write_log(f"  성공! (총 {attempt + 1}회 시도)")
 
                             # 이력 검색 설정이 없으면 별도 탐지 시도
                             if is_generic:
@@ -889,18 +913,19 @@ class SettingsTab(QWidget):
                                     from core.history_config import get_config as _get_hcfg
                                     h_cfg = _get_hcfg(self._wid)
                                     if not h_cfg or not h_cfg.get("history_url"):
-                                        print(f"[자가치유] {self._wid} 이력 페이지 탐지 시도...")
+                                        self._write_log(f"  이력 페이지 탐지 시도...")
                                         ws_hist = ws_class(config)
                                         asyncio.run(ws_hist._ensure_history_config(headless=True))
                                 except Exception as he:
-                                    print(f"[자가치유] {self._wid} 이력 탐지 오류: {he}")
+                                    self._write_log(f"  이력 탐지 오류: {he}")
 
                             break
 
                         # 실패 처리
                         stage = result.get("stage", "")
                         message = result.get("message", "")
-                        print(f"[자가치유] {self._wid} 실패 stage={stage}: {message}")
+                        last_detail = message
+                        self._write_log(f"  실패 stage={stage}: {message}")
 
                         if stage == "login":
                             last_status = "로그인 실패"
@@ -913,15 +938,19 @@ class SettingsTab(QWidget):
                         if not is_generic:
                             break
 
-                        if attempt < MAX_ATTEMPTS - 1:
-                            print(f"[자가치유] {self._wid} 다음 시도 준비 중...")
-
                 except Exception as e:
                     import traceback
-                    print(f"[자가치유] {self._wid} 예외 발생: {e}")
-                    traceback.print_exc()
-                    last_status = "연동 오류"
+                    self._write_log(f"  예외 발생: {e}")
+                    self._write_log(traceback.format_exc())
+                    last_status = f"오류: {type(e).__name__}"
+                    last_detail = str(e)
 
+                # 실패 시 상세 원인 포함
+                if last_status != "정상" and last_detail:
+                    short = last_detail[:40]
+                    last_status = f"{last_status} ({short})"
+
+                self._write_log(f"  최종 결과: {last_status}")
                 self.done.emit(self._row, self._wid, last_status)
 
         tester = _FullTester(row, wid, data)
@@ -953,16 +982,24 @@ class SettingsTab(QWidget):
             status_item = self.ws_table.item(row, 5)
             if status_item:
                 status_item.setText(display_text)
-                color = self._STATUS_COLORS.get(status_text, Qt.GlobalColor.black)
-                if not history_ok and status_text == "정상":
-                    from PyQt6.QtGui import QColor
-                    color = QColor("#F59E0B")  # 주황 — 주문은 되지만 이력 미지원
+                # 색상: "정상"이면 녹색, 아니면 빨간색
+                if "정상" in status_text:
+                    if not history_ok:
+                        from PyQt6.QtGui import QColor
+                        color = QColor("#F59E0B")
+                    else:
+                        color = Qt.GlobalColor.darkGreen
+                else:
+                    color = Qt.GlobalColor.red
                 status_item.setForeground(color)
+                # 툴팁으로 전체 메시지 표시
+                status_item.setToolTip(display_text)
 
-        # 결과를 wholesalers.json에 저장 → 다음에 열 때 바로 표시
+        # 결과를 wholesalers.json에 저장 — 기본 상태만 저장
+        base_status = status_text.split(" (")[0] if " (" in status_text else status_text
         ws = _load_json("wholesalers.json")
         if wid in ws:
-            ws[wid]["connection_status"] = status_text
+            ws[wid]["connection_status"] = base_status
             ws[wid]["history_supported"] = history_ok
             _save_json("wholesalers.json", ws)
 

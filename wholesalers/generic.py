@@ -575,135 +575,94 @@ class GenericWholesaler(WholesalerBase):
     _HISTORY_KEYWORDS = [
         "주문", "이력", "거래", "입고", "매입", "내역",
         "반품", "출고", "납품", "매출", "원장", "일련",
+        "구매", "발주", "배송", "조회",
     ]
     _HISTORY_TABLE_KEYWORDS = [
         "제조번호", "로트", "lot", "유효기한", "유효", "만료",
-        "주문일", "입고일", "출고일", "배송일",
+        "주문일", "입고일", "출고일", "배송일", "거래일", "납품일",
+        "품명", "약품명", "상품명", "제품명",
+        "수량", "단가", "금액",
+    ]
+    # 테이블 필수 키워드 — 이 중 1개 이상이면 이력 테이블 후보
+    _HISTORY_TABLE_REQUIRED = [
+        "제조번호", "로트", "lot", "유효기한", "유효", "만료",
+        "주문일", "입고일", "출고일", "배송일", "거래일", "납품일",
     ]
 
     async def _detect_history_page(self) -> dict | None:
-        """로그인 상태에서 이력/반품 관련 페이지를 탐색한다."""
+        """로그인 상태에서 이력/반품 관련 페이지를 탐색한다.
+
+        analyze_site 이후 호출 시 주문 페이지에 있을 수 있으므로
+        반드시 메인(홈) 페이지로 이동 후 메뉴를 스캔한다.
+        """
         page = self._page
-        current_url = page.url
+        return_url = page.url
 
         try:
-            # 1) 메뉴에서 이력 관련 링크 찾기
-            links = await page.query_selector_all("a")
-            candidates = []
-            seen = set()
+            # ── 1) 메인 페이지로 이동해서 전체 네비게이션 스캔 ──
+            await page.goto(self.url, wait_until="domcontentloaded", timeout=15000)
+            await page.wait_for_timeout(2000)
+            await self._close_popup()
 
-            for el in links:
-                try:
-                    href = await el.get_attribute("href") or ""
-                    text = (await el.inner_text()).strip().replace("\n", " ")[:60]
-                    if not text or text in seen or not href or href == "#":
-                        continue
-                    seen.add(text)
-
-                    score = sum(1 for kw in self._HISTORY_KEYWORDS
-                                if kw in text.lower() or kw in href.lower())
-                    if score > 0:
-                        candidates.append({"text": text, "href": href, "score": score})
-                except Exception:
-                    continue
+            # ── 2) 모든 클릭 가능한 요소에서 이력 관련 링크 찾기 ──
+            candidates = await self._scan_history_links(page)
 
             if not candidates:
                 self._progress("  이력 관련 메뉴 없음")
                 return None
 
             candidates.sort(key=lambda x: x["score"], reverse=True)
-            self._progress(f"  이력 후보 {len(candidates)}개: {candidates[0]['text']}")
+            self._progress(f"  이력 후보 {len(candidates)}개: "
+                           f"{', '.join(c['text'] for c in candidates[:3])}")
 
-            # 2) 상위 후보 페이지 방문 → 테이블 분석
+            # ── 3) 상위 후보 페이지 방문 → 테이블 분석 ──
             from urllib.parse import urljoin
 
-            for cand in candidates[:3]:
+            for cand in candidates[:5]:
                 href = cand["href"]
-                target = urljoin(current_url, href) if not href.startswith("http") else href
 
-                try:
-                    await page.goto(target, wait_until="domcontentloaded", timeout=10000)
-                    await page.wait_for_timeout(2000)
-                except Exception:
-                    continue
-
-                # 테이블 헤더에서 제조번호/유효기한 관련 컬럼 찾기
-                tables = await page.query_selector_all("table")
-                for ti, table in enumerate(tables):
-                    headers = await table.query_selector_all("th")
-                    h_texts = []
-                    for h in headers:
-                        h_texts.append((await h.inner_text()).strip().lower())
-
-                    if not h_texts:
+                # JS 링크는 클릭으로 접근
+                if not href or href in ("#", "javascript:void(0)"):
+                    try:
+                        el = cand.get("element")
+                        if el:
+                            await el.click(force=True)
+                            await page.wait_for_timeout(3000)
+                            await self._close_popup()
+                    except Exception:
+                        continue
+                else:
+                    target = urljoin(self.url, href) if not href.startswith("http") else href
+                    try:
+                        await page.goto(target, wait_until="domcontentloaded",
+                                        timeout=10000)
+                        await page.wait_for_timeout(2000)
+                        await self._close_popup()
+                    except Exception:
                         continue
 
-                    # 이력 관련 헤더가 있는지 확인
-                    h_joined = " ".join(h_texts)
-                    lot_score = sum(1 for kw in self._HISTORY_TABLE_KEYWORDS
-                                    if kw in h_joined)
+                # 현재 페이지에서 이력 테이블 분석
+                config = await self._analyze_history_table(page, cand)
+                if config:
+                    # 성공 — 원래 페이지로 복귀
+                    try:
+                        await page.goto(return_url, wait_until="domcontentloaded",
+                                        timeout=10000)
+                    except Exception:
+                        pass
+                    return config
 
-                    if lot_score >= 2:
-                        self._progress(f"  이력 테이블 발견: {cand['text']} (table[{ti}])")
-
-                        # 컬럼 매핑
-                        col_map = {}
-                        for idx, ht in enumerate(h_texts):
-                            if any(k in ht for k in ["제품", "상품", "품명", "약품"]):
-                                col_map["drug_name"] = idx
-                            elif any(k in ht for k in ["주문일", "입고일", "출고일", "배송일", "날짜"]):
-                                col_map["date"] = idx
-                            elif any(k in ht for k in ["수량", "납입"]):
-                                col_map["qty"] = idx
-                            elif any(k in ht for k in ["제조번호", "로트", "lot"]):
-                                col_map["lot_number"] = idx
-                            elif any(k in ht for k in ["유효기한", "유효", "만료"]):
-                                col_map["expiry"] = idx
-
-                        # 검색 필드 탐색
-                        search_fields = {}
-                        search_inputs = await page.query_selector_all("input:visible")
-                        for inp in search_inputs:
-                            ph = (await inp.get_attribute("placeholder") or "").lower()
-                            inp_id = await inp.get_attribute("id") or ""
-                            if any(k in ph for k in ["품목", "약품", "상품", "검색", "제품"]):
-                                search_fields["keyword"] = f"#{inp_id}" if inp_id else f'input[placeholder*="{ph[:10]}"]'
-                            elif any(k in ph for k in ["제조번호", "로트", "lot"]):
-                                search_fields["lot_number"] = f"#{inp_id}" if inp_id else f'input[placeholder*="{ph[:10]}"]'
-
-                        # 검색/조회 버튼
-                        for sel in ['button:has-text("검색")', 'button:has-text("조회")',
-                                    "button.btn_search", "button.lookup-btn"]:
-                            btn = await page.query_selector(sel)
-                            if btn and await btn.is_visible():
-                                search_fields["search_btn"] = sel
-                                break
-
-                        config = {
-                            "history_url": href,
-                            "history_page_name": cand["text"],
-                            "search": search_fields,
-                            "table": {
-                                "index": ti,
-                                "columns": col_map,
-                                "headers": [h.strip() for h in h_texts],
-                            },
-                            "auto_detected": True,
-                        }
-
-                        # 원래 페이지로 복귀
-                        try:
-                            await page.goto(current_url, wait_until="domcontentloaded",
-                                            timeout=10000)
-                            await page.wait_for_timeout(1000)
-                        except Exception:
-                            pass
-
-                        return config
+                # 실패 — 메인 페이지로 돌아가서 다음 후보
+                try:
+                    await page.goto(self.url, wait_until="domcontentloaded",
+                                    timeout=10000)
+                    await page.wait_for_timeout(1000)
+                except Exception:
+                    pass
 
             # 원래 페이지로 복귀
             try:
-                await page.goto(current_url, wait_until="domcontentloaded",
+                await page.goto(return_url, wait_until="domcontentloaded",
                                 timeout=10000)
             except Exception:
                 pass
@@ -712,6 +671,183 @@ class GenericWholesaler(WholesalerBase):
             self._progress(f"  이력 페이지 탐색 오류: {e}")
 
         return None
+
+    async def _scan_history_links(self, page) -> list[dict]:
+        """페이지에서 이력 관련 링크/메뉴를 모두 수집한다."""
+        candidates = []
+        seen = set()
+
+        # a 태그 + onclick 클릭 가능한 요소까지 스캔
+        selectors = ["a", "[onclick]", "li[class*='menu']", "span[class*='menu']"]
+        for sel in selectors:
+            try:
+                elements = await page.query_selector_all(sel)
+            except Exception:
+                continue
+
+            for el in elements:
+                try:
+                    href = await el.get_attribute("href") or ""
+                    onclick = await el.get_attribute("onclick") or ""
+                    text = (await el.inner_text()).strip().replace("\n", " ")[:60]
+                    if not text or len(text) < 2 or text in seen:
+                        continue
+                    seen.add(text)
+
+                    text_lower = text.lower()
+                    href_lower = (href + " " + onclick).lower()
+
+                    score = sum(1 for kw in self._HISTORY_KEYWORDS
+                                if kw in text_lower or kw in href_lower)
+                    if score > 0:
+                        candidates.append({
+                            "text": text,
+                            "href": href if href and href != "#" else "",
+                            "onclick": onclick,
+                            "score": score,
+                            "element": el,
+                        })
+                except Exception:
+                    continue
+
+        return candidates
+
+    async def _analyze_history_table(self, page, cand: dict) -> dict | None:
+        """현재 페이지에서 이력 테이블을 분석하여 config를 반환한다."""
+        # 테이블 헤더에서 이력 관련 컬럼 찾기
+        tables = await page.query_selector_all("table")
+        for ti, table in enumerate(tables):
+            headers = await table.query_selector_all("th")
+            h_texts = []
+            for h in headers:
+                h_texts.append((await h.inner_text()).strip().lower())
+
+            if not h_texts or len(h_texts) < 3:
+                continue
+
+            h_joined = " ".join(h_texts)
+
+            # 필수 키워드 1개 이상 + 전체 키워드 2개 이상
+            required_score = sum(1 for kw in self._HISTORY_TABLE_REQUIRED
+                                 if kw in h_joined)
+            total_score = sum(1 for kw in self._HISTORY_TABLE_KEYWORDS
+                              if kw in h_joined)
+
+            if required_score >= 1 and total_score >= 2:
+                self._progress(f"  이력 테이블 발견: {cand['text']} (table[{ti}])")
+
+                # 컬럼 매핑
+                col_map = {}
+                for idx, ht in enumerate(h_texts):
+                    if any(k in ht for k in ["제품", "상품", "품명", "약품"]):
+                        col_map.setdefault("drug_name", idx)
+                    elif any(k in ht for k in ["주문일", "입고일", "출고일",
+                                                "배송일", "거래일", "납품일", "날짜"]):
+                        col_map.setdefault("date", idx)
+                    elif any(k in ht for k in ["수량", "납입"]):
+                        col_map.setdefault("qty", idx)
+                    elif any(k in ht for k in ["제조번호", "로트", "lot"]):
+                        col_map.setdefault("lot_number", idx)
+                    elif any(k in ht for k in ["유효기한", "유효", "만료"]):
+                        col_map.setdefault("expiry", idx)
+
+                # 검색 필드 탐색
+                search_fields = await self._detect_history_search_fields(page)
+
+                href = cand.get("href") or page.url
+                # 상대 경로면 그대로 유지
+                if href.startswith("http"):
+                    from urllib.parse import urlparse
+                    parsed = urlparse(href)
+                    href = parsed.path + ("?" + parsed.query if parsed.query else "")
+
+                return {
+                    "history_url": href,
+                    "history_page_name": cand["text"],
+                    "search": search_fields,
+                    "table": {
+                        "index": ti,
+                        "columns": col_map,
+                        "headers": [h.strip() for h in h_texts],
+                    },
+                    "auto_detected": True,
+                }
+
+        # 테이블이 없어도 검색 가능한 페이지면 기본 config 반환
+        search_fields = await self._detect_history_search_fields(page)
+        if search_fields.get("keyword"):
+            href = cand.get("href") or page.url
+            if href.startswith("http"):
+                from urllib.parse import urlparse
+                parsed = urlparse(href)
+                href = parsed.path + ("?" + parsed.query if parsed.query else "")
+
+            self._progress(f"  이력 검색 필드만 발견: {cand['text']} (테이블은 검색 후 생성될 수 있음)")
+            return {
+                "history_url": href,
+                "history_page_name": cand["text"],
+                "search": search_fields,
+                "table": {"index": 0, "columns": {}, "headers": []},
+                "auto_detected": True,
+                "table_after_search": True,
+            }
+
+        return None
+
+    async def _detect_history_search_fields(self, page) -> dict:
+        """이력 페이지에서 검색 필드(약품명, 로트번호, 검색 버튼)를 탐지한다."""
+        search_fields = {}
+
+        try:
+            inputs = await page.query_selector_all("input[type='text'], input:not([type])")
+            for inp in inputs:
+                try:
+                    if not await inp.is_visible():
+                        continue
+                except Exception:
+                    continue
+
+                ph = (await inp.get_attribute("placeholder") or "").lower()
+                name = (await inp.get_attribute("name") or "").lower()
+                inp_id = await inp.get_attribute("id") or ""
+                combined = ph + " " + name
+
+                if any(k in combined for k in ["품목", "약품", "상품", "검색",
+                                                 "제품", "품명", "keyword", "item"]):
+                    sel = f"#{inp_id}" if inp_id else f'input[placeholder*="{ph[:10]}"]' if ph else f'input[name*="{name[:10]}"]'
+                    search_fields.setdefault("keyword", sel)
+                elif any(k in combined for k in ["제조번호", "로트", "lot"]):
+                    sel = f"#{inp_id}" if inp_id else f'input[placeholder*="{ph[:10]}"]' if ph else f'input[name*="{name[:10]}"]'
+                    search_fields.setdefault("lot_number", sel)
+        except Exception:
+            pass
+
+        # 검색/조회 버튼
+        for sel in ['button:has-text("검색")', 'button:has-text("조회")',
+                    'input[type="submit"]', 'input[type="button"][value*="검색"]',
+                    'input[type="button"][value*="조회"]',
+                    "button.btn_search", "button.lookup-btn",
+                    'a:has-text("검색")', 'a:has-text("조회")']:
+            try:
+                btn = await page.query_selector(sel)
+                if btn and await btn.is_visible():
+                    search_fields["search_btn"] = sel
+                    break
+            except Exception:
+                continue
+
+        # 기간 설정 버튼 (5년/3년/1년)
+        for period in ['button:has-text("5년")', 'button:has-text("3년")',
+                       'button:has-text("1년")', 'button:has-text("전체")']:
+            try:
+                btn = await page.query_selector(period)
+                if btn and await btn.is_visible():
+                    search_fields["period_btn"] = period
+                    break
+            except Exception:
+                continue
+
+        return search_fields
 
     # ────── 전체 사이트 분석 ──────
 
@@ -734,7 +870,7 @@ class GenericWholesaler(WholesalerBase):
             page.on("dialog", lambda d: d.accept())
 
             # 1. 로그인 페이지 분석
-            self._progress("1/4 로그인 폼 분석 중...")
+            self._progress("1/5 로그인 폼 분석 중...")
             await page.goto(self.url, wait_until="domcontentloaded")
             await page.wait_for_timeout(3000)
             await self._screenshot(f"generic_{self._wid}_01_before_login.png")
@@ -747,7 +883,7 @@ class GenericWholesaler(WholesalerBase):
                 return all_selectors
 
             # 2. 로그인 시도
-            self._progress("2/4 로그인 시도 중...")
+            self._progress("2/5 로그인 시도 중...")
             await page.fill(login_sel["id_input"], self.user_id)
             await page.fill(login_sel["pw_input"], self.password)
             if login_sel.get("login_btn"):
@@ -761,7 +897,7 @@ class GenericWholesaler(WholesalerBase):
             await self._screenshot(f"generic_{self._wid}_02_after_login.png")
 
             # 3. 검색 분석
-            self._progress("3/4 검색 기능 분석 중...")
+            self._progress("3/5 검색 기능 분석 중...")
             search_sel = await self._detect_search()
             all_selectors["search"] = search_sel
 
@@ -826,7 +962,7 @@ class GenericWholesaler(WholesalerBase):
                 all_selectors["table"] = table_sel
 
             # 4. 주문확정 버튼 분석
-            self._progress("4/4 주문확정 버튼 분석 중...")
+            self._progress("4/5 주문확정 버튼 분석 중...")
             confirm_sel = await self._detect_confirm()
             all_selectors["confirm"] = confirm_sel
 
@@ -1857,15 +1993,44 @@ class GenericWholesaler(WholesalerBase):
         results = []
         table_cfg = cfg.get("table", {})
         table_idx = table_cfg.get("index", 0)
-        columns = table_cfg.get("columns", {})
+        columns = dict(table_cfg.get("columns", {}))
 
         tables = page.locator("table")
         table_count = await tables.count()
-        if table_idx >= table_count:
-            self._progress(f"  테이블 없음 (발견: {table_count}개)")
+
+        # table_after_search: 검색 전에는 테이블이 없던 사이트
+        # 검색 후 나타난 테이블에서 동적으로 컬럼 매핑
+        if table_count == 0:
+            self._progress(f"  테이블 없음 (발견: 0개)")
             return results
 
+        if table_idx >= table_count:
+            table_idx = 0  # 폴백: 첫 번째 테이블 사용
+
         target_table = tables.nth(table_idx)
+
+        # 컬럼 매핑이 없으면 헤더에서 동적 탐지
+        if not columns:
+            try:
+                headers = target_table.locator("th")
+                h_count = await headers.count()
+                for idx in range(h_count):
+                    ht = (await headers.nth(idx).inner_text()).strip().lower()
+                    if any(k in ht for k in ["제품", "상품", "품명", "약품"]):
+                        columns.setdefault("drug_name", idx)
+                    elif any(k in ht for k in ["주문일", "입고일", "출고일",
+                                                "배송일", "거래일", "납품일", "날짜"]):
+                        columns.setdefault("date", idx)
+                    elif any(k in ht for k in ["수량", "납입"]):
+                        columns.setdefault("qty", idx)
+                    elif any(k in ht for k in ["제조번호", "로트", "lot"]):
+                        columns.setdefault("lot_number", idx)
+                    elif any(k in ht for k in ["유효기한", "유효", "만료"]):
+                        columns.setdefault("expiry", idx)
+                if columns:
+                    self._progress(f"  동적 컬럼 매핑: {columns}")
+            except Exception:
+                pass
         rows = target_table.locator("tbody tr")
         row_count = await rows.count()
         self._progress(f"{self.name} 검색 결과: {row_count}건")

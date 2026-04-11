@@ -232,7 +232,7 @@ class SetupWizard(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("PharmAuto 초기 설정")
-        self.setFixedSize(480, 400)
+        self.setMinimumSize(480, 400)
         self.setWindowFlags(
             Qt.WindowType.Dialog
             | Qt.WindowType.CustomizeWindowHint
@@ -241,11 +241,12 @@ class SetupWizard(QDialog):
         self.setStyleSheet("QDialog { background: white; }")
         self._setup_complete = False
         self._init_ui()
+        self.adjustSize()
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setSpacing(16)
-        layout.setContentsMargins(40, 36, 40, 32)
+        layout.setSpacing(18)
+        layout.setContentsMargins(44, 40, 44, 36)
 
         # 제목
         title = QLabel("PharmAuto 초기 설정")
@@ -253,14 +254,16 @@ class SetupWizard(QDialog):
             "font-size: 22px; font-weight: 700; color: #1A1A2E; "
             "font-family: 'Malgun Gothic';"
         )
+        title.setMinimumHeight(32)
         layout.addWidget(title)
 
         safety = QLabel(
             "읽기 전용으로 DB를 탐색합니다. 기존 프로그램에 영향을 주지 않습니다."
         )
+        safety.setWordWrap(True)
         safety.setStyleSheet(
             "font-size: 12px; color: #22C55E; font-weight: 600; "
-            "font-family: 'Malgun Gothic'; padding: 8px 12px; "
+            "font-family: 'Malgun Gothic'; padding: 10px 14px; "
             "background: #F0FFF4; border-radius: 6px;"
         )
         layout.addWidget(safety)
@@ -277,6 +280,7 @@ class SetupWizard(QDialog):
             "font-size: 14px; font-weight: 600; color: #1A1A2E; "
             "font-family: 'Malgun Gothic';"
         )
+        prog_label.setMinimumHeight(24)
         layout.addWidget(prog_label)
 
         self._prog_group = QButtonGroup(self)
@@ -285,7 +289,7 @@ class SetupWizard(QDialog):
             radio = QRadioButton(info["label"])
             radio.setStyleSheet(
                 "QRadioButton { font-size: 14px; font-family: 'Malgun Gothic'; "
-                "padding: 6px 0; }"
+                "padding: 8px 0; min-height: 20px; }"
             )
             self._prog_group.addButton(radio)
             self._prog_radios[key] = radio
