@@ -104,9 +104,15 @@ class WholesalerBase(ABC):
         # PyInstaller 패키징 시 번들된 Chromium 경로 설정
         if getattr(sys, 'frozen', False):
             bundle_dir = os.path.dirname(sys.executable)
-            browsers_dir = os.path.join(bundle_dir, "playwright_browsers")
-            if os.path.exists(browsers_dir):
-                os.environ["PLAYWRIGHT_BROWSERS_PATH"] = browsers_dir
+            # _internal 안에 있는 경우 (PyInstaller onedir)
+            candidates = [
+                os.path.join(bundle_dir, "_internal", "playwright_browsers"),
+                os.path.join(bundle_dir, "playwright_browsers"),
+            ]
+            for browsers_dir in candidates:
+                if os.path.exists(browsers_dir):
+                    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = browsers_dir
+                    break
 
         self._playwright = await async_playwright().start()
         self._browser = await self._playwright.chromium.launch(headless=headless)

@@ -226,11 +226,14 @@ def _search_samwon_history(drug_name: str, lot_number: str = "",
         pw_inst = await async_playwright().start()
 
         if getattr(sys, 'frozen', False):
-            browsers_dir = os.path.join(
-                os.path.dirname(sys.executable), "playwright_browsers"
-            )
-            if os.path.exists(browsers_dir):
-                os.environ["PLAYWRIGHT_BROWSERS_PATH"] = browsers_dir
+            bundle_dir = os.path.dirname(sys.executable)
+            for _bdir in [
+                os.path.join(bundle_dir, "_internal", "playwright_browsers"),
+                os.path.join(bundle_dir, "playwright_browsers"),
+            ]:
+                if os.path.exists(_bdir):
+                    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _bdir
+                    break
 
         browser = await pw_inst.chromium.launch(headless=True)
         page = await browser.new_page()
