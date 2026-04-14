@@ -297,10 +297,11 @@ def place_orders(order_items: list[dict], progress_callback=None,
             all_oos.append(it)
 
     retry_results = []
-    if all_oos and not dry_run:
+    if all_oos:
         if progress_callback:
             progress_callback(f"품절 {len(all_oos)}건 → 대체 도매상 재주문 시도...")
-        retry_results = _retry_oos_items(all_oos, wholesalers, progress_callback)
+        retry_results = _retry_oos_items(all_oos, wholesalers, progress_callback,
+                                         dry_run=dry_run)
 
     return results, retry_results
 
@@ -365,13 +366,14 @@ def _execute_wholesaler_order(wid: str, ws_config: dict, items: list[dict],
 
 
 def _retry_oos_items(oos_items: list[dict], wholesalers: dict,
-                     progress_callback=None) -> list[dict]:
+                     progress_callback=None, dry_run: bool = False) -> list[dict]:
     """품절 항목을 다른 도매상으로 자동 재주문한다.
 
     Args:
         oos_items: 품절된 주문 항목 리스트 (_original_wholesaler 키 포함)
         wholesalers: 전체 도매상 설정 dict
         progress_callback: 진행 상황 콜백
+        dry_run: True면 장바구니만 담기
 
     Returns:
         [{"item": dict, "original_ws": str, "retry_ws": str, "success": bool}, ...]
@@ -394,7 +396,7 @@ def _retry_oos_items(oos_items: list[dict], wholesalers: dict,
 
             ws_config = {**ws, "id": ws.get("id", ""), "pw": ws.get("pw", "")}
             order_result = _execute_wholesaler_order(
-                wid, ws_config, [item], progress_callback
+                wid, ws_config, [item], progress_callback, dry_run=dry_run
             )
 
             ws_success = (order_result.get("success", False)
@@ -409,12 +411,14 @@ def _retry_oos_items(oos_items: list[dict], wholesalers: dict,
                         item["pack_size"] = r.get("pack_size", 0)
                         item["box_qty"] = r.get("box_qty", 0)
 
-                _save_order_history([item], wid, ws_name, status="ordered")
+                ok_status = "cart_only" if dry_run else "ordered"
+                _save_order_history([item], wid, ws_name, status=ok_status)
                 results.append({
                     "item": item,
                     "original_ws": item.get("_original_ws_name", original_wid),
                     "retry_ws": ws_name,
                     "success": True,
+                    "message": f"{ws_name} 장바구니 담기 완료" if dry_run else f"{ws_name} 주문 완료",
                 })
                 ordered = True
                 break

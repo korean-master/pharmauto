@@ -73,19 +73,11 @@
     "notes": "반품 전용 페이지. 약품명+제조번호 검색 가능. 상세 테이블에 LOT 있음"
   },
   "삼원약품": {
-    "name": "삼원약품",
-    "base_url": "https://www.pharmbox.co.kr",
     "history_url": "/mypharm/sales_ledger.jsp",
-    "login": {
-      "url": "/",
-      "id_sel": "#P_H_USER_ID",
-      "pw_sel": "#P_H_PWD",
-      "btn_sel": "Enter"
-    },
+    "history_page_name": "매출원장",
     "search": {
-      "keyword": "#P_SRH_SALES_KEY",
-      "period_btn": "button:has-text(\"6개월\")",
-      "search_btn": "button.lookup-btn"
+      "keyword": "#P_SRH_KEY",
+      "search_btn": "button:has-text(\"검색\")"
     },
     "table": {
       "index": 1,
@@ -95,8 +87,26 @@
         "qty": 3,
         "lot_number": 8,
         "expiry": 9
-      }
+      },
+      "headers": [
+        "주문일",
+        "보험코드",
+        "제품명",
+        "규격 /수량",
+        "단가",
+        "구입액",
+        "수금액",
+        "총 잔액",
+        "제조번호",
+        "유효기한"
+      ]
     },
-    "notes": "매출원장 페이지. 테이블에서 직접 제조번호/유효기한 확인"
+    "auto_detected": true,
+    "name": "삼원약품",
+    "base_url": "https://www.pharmbox.co.kr/",
+    "login": {
+      "id_input": "input[placeholder*=\"아이디\"]",
+      "pw_input": "input[type=\"password\"]"
+    }
   }
 }

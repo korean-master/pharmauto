@@ -603,6 +603,16 @@ class SettingsTab(QWidget):
         self._remote_status.setStyleSheet(DESCRIPTION)
         remote_btn_row.addWidget(self._remote_status)
 
+        log_btn = QPushButton("오류 로그 열기")
+        log_btn.setStyleSheet(
+            f"QPushButton {{ font-size: 13px; padding: 10px 24px; "
+            f"background: #6B7280; color: white; border: none; "
+            f"border-radius: 8px; font-weight: 600; font-family: 'Malgun Gothic'; }}"
+            f"QPushButton:hover {{ background: #4B5563; }}"
+        )
+        log_btn.clicked.connect(self._on_open_log)
+        remote_btn_row.addWidget(log_btn)
+
         remote_btn_row.addStretch()
         remote_lay.addLayout(remote_btn_row)
 
@@ -857,19 +867,21 @@ class SettingsTab(QWidget):
                         self._write_log(f"  시도 {attempt + 1}/{MAX_ATTEMPTS}")
 
                         if is_generic:
-                            if attempt > 0:
-                                self._write_log(f"  셀렉터 초기화 → 재분석...")
-                                from core.selector_store import delete_selectors
-                                delete_selectors(self._wid)
-                                ws_analyze = ws_class(config)
-                                asyncio.run(ws_analyze.analyze_site(headless=True))
-                            else:
+                            if attempt == 0:
+                                # 1회차: 휴리스틱 분석 (내부에서 실패 시 AI 에이전트 폴백)
                                 from core.selector_store import load_selectors
                                 cur_sel = load_selectors(self._wid)
                                 if not cur_sel or not cur_sel.get("auto_detected"):
                                     self._write_log(f"  셀렉터 없음 → 사이트 분석...")
                                     ws_analyze = ws_class(config)
                                     asyncio.run(ws_analyze.analyze_site(headless=True))
+                            else:
+                                # 2회차+: 셀렉터 삭제 → AI 시각 에이전트 직행
+                                self._write_log(f"  셀렉터 초기화 → AI 시각 에이전트 재분석...")
+                                from core.selector_store import delete_selectors
+                                delete_selectors(self._wid)
+                                ws_analyze = ws_class(config)
+                                asyncio.run(ws_analyze.analyze_site(headless=True))
 
                         # 연동 테스트 실행
                         ws_test = ws_class(config)
@@ -2087,6 +2099,16 @@ class SettingsTab(QWidget):
             self._inspect_status.setStyleSheet(
                 f"font-size: 12px; color: {_RED}; font-family: 'Malgun Gothic';"
             )
+
+    def _on_open_log(self):
+        """오류 로그 파일을 메모장으로 연다."""
+        from core.logger import get_log_path
+        log_path = get_log_path()
+        if os.path.exists(log_path):
+            os.startfile(log_path)
+        else:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(self, "로그", "아직 로그 파일이 없습니다.")
 
     def _on_remote_support(self):
         import os

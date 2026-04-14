@@ -74,6 +74,7 @@ class JioeyoungWholesaler(WholesalerBase):
         rows = await page.query_selector_all('#tbodySearchProduct tr.tr-product-list')
         if not rows:
             result["message"] = "검색 결과 없음"
+            result["out_of_stock"] = True
             self._progress(f"  [{insurance_code}] 검색 결과 없음 ({idx}/{total})")
             return result
 
@@ -113,6 +114,7 @@ class JioeyoungWholesaler(WholesalerBase):
 
         if not candidates:
             result["message"] = "재고 없음"
+            result["out_of_stock"] = True
             self._progress(f"  [{insurance_code}] 재고 없음 ({idx}/{total})")
             return result
 

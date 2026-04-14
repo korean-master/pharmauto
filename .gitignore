@@ -37,6 +37,20 @@ playwright_browsers/
 # Build output
 installer_output/
 dist.zip
+dist_nuitka/
+nuitka_build.bat
+nuitka-crash-report.xml
+
+# Venv
+venv*/
+
+# Certificates (코드서명)
+*.cer
+*.pfx
+
+# Test files
+test_*.py
+test_*.txt
 
 # Auth / personal config
 config/auth.json

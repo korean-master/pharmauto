@@ -109,6 +109,7 @@ class BaekjeWholesaler(WholesalerBase):
         )
         if not result_cells:
             result["message"] = "검색 결과 없음"
+            result["out_of_stock"] = True
             self._progress(f"  [{insurance_code}] 검색 결과 없음 ({idx}/{total})")
             return result
 
@@ -193,16 +194,21 @@ class BaekjeWholesaler(WholesalerBase):
             await chosen["row"].click(force=True)
         await page.wait_for_timeout(1000)
 
-        # 수량 input에 박스 수 입력
-        qty_input = await page.query_selector('.td-qty input')
+        # 수량 input에 박스 수 입력 — 선택된 행 안에서 찾기
+        qty_input = await chosen["row"].query_selector('.td-qty input')
+        if not qty_input:
+            # 폴백: 페이지 전체에서 찾기 (행이 1개뿐일 때)
+            qty_input = await page.query_selector('.td-qty input')
         if qty_input:
             await qty_input.click(force=True)
             await qty_input.fill(str(box_qty))
             await page.wait_for_timeout(300)
 
-        # 담기 버튼 클릭
+        # 담기 버튼 — 선택된 행 안에서 먼저 찾기
         await self._close_popup(page)
-        add_btn = await page.query_selector('button:has-text("담기")')
+        add_btn = await chosen["row"].query_selector('.td-add button')
+        if not add_btn:
+            add_btn = await page.query_selector('button:has-text("담기")')
         if add_btn:
             await add_btn.click(force=True)
             await page.wait_for_timeout(2000)

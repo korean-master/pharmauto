@@ -156,6 +156,30 @@ class WholesalerBase(ABC):
         self._page = None
         self._playwright = None
 
+    async def _close_popup(self):
+        """공통 팝업/알림/모달 닫기. 페이지에 떠 있는 팝업을 자동 처리한다."""
+        if not self._page:
+            return
+        try:
+            # alert/confirm 다이얼로그
+            self._page.on("dialog", lambda d: d.dismiss())
+        except Exception:
+            pass
+        # 일반적인 닫기 버튼 패턴
+        close_selectors = [
+            "button.close", ".modal .close", "[aria-label='Close']",
+            ".popup-close", ".btn-close", ".layer_close",
+            "button:has-text('닫기')", "button:has-text('확인')",
+        ]
+        for sel in close_selectors:
+            try:
+                btn = self._page.locator(sel).first
+                if await btn.is_visible(timeout=300):
+                    await btn.click(force=True)
+                    await self._page.wait_for_timeout(300)
+            except Exception:
+                pass
+
     async def _screenshot(self, filename: str) -> str:
         os.makedirs(SCREENSHOT_DIR, exist_ok=True)
         path = os.path.join(SCREENSHOT_DIR, filename)

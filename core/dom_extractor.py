@@ -13,14 +13,15 @@ if TYPE_CHECKING:
 
 
 # form 분석에 필요한 태그
-FORM_TAGS = {"input", "button", "select", "form", "a", "label", "textarea"}
+FORM_TAGS = {"input", "button", "select", "form", "a", "label", "textarea",
+             "table", "thead", "tbody", "tr", "th", "td"}
 
 # 분석에 유용한 속성만 추출
 USEFUL_ATTRS = {"id", "name", "type", "placeholder", "class", "href",
                 "value", "for", "action", "method", "onclick", "title"}
 
 # 최대 추출 줄 수 (LLM 컨텍스트 크기 제한)
-MAX_LINES = 200
+MAX_LINES = 350
 
 
 async def extract_form_skeleton(page: "Page") -> str:

@@ -516,10 +516,14 @@ class GenericWholesaler(WholesalerBase):
             'button:has-text("추가")',
             'button:has-text("담기")',
             'button:has-text("장바구니")',
+            'a:has-text("추가")',
+            'a:has-text("담기")',
+            'a:has-text("장바구니 담기")',
+            'a:has(img[alt*="담기"])',
+            'td:last-child a',
             'input[type="button"][value*="추가"]',
             'input[type="button"][value*="담기"]',
-            'a:has(img[alt*="담기"])',
-            'a:has-text("장바구니 담기")',
+            'span:has-text("추가")',
         ]
         for sel in cart_candidates:
             el = await first_row.query_selector(sel)
@@ -978,9 +982,45 @@ class GenericWholesaler(WholesalerBase):
                 login_sel.get("pw_input"),
                 search_sel.get("search_input"),
             ]
-            all_selectors["auto_detected"] = all(required)
-            status = "성공" if all_selectors["auto_detected"] else "일부 실패"
-            self._progress(f"사이트 분석 {status}")
+            table_ok = bool(table_sel.get("result_rows") and table_sel.get("cart_btn"))
+            all_selectors["auto_detected"] = all(required) and table_ok
+
+            if all_selectors["auto_detected"]:
+                self._progress("사이트 분석 성공")
+            else:
+                # 휴리스틱 실패 → Visual Agent로 폴백
+                self._progress("휴리스틱 분석 불완전 → AI 시각 에이전트 시작...")
+                try:
+                    from core.ai_analyzer import _load_api_key
+                    api_key = _load_api_key()
+                    if api_key:
+                        from core.visual_agent import VisualAgent
+                        agent = VisualAgent(api_key, self._wid)
+                        # 기존 브라우저 닫고 새로 시작
+                        await self._close()
+                        await self._launch(headless=headless)
+                        page = self._page
+                        page.on("dialog", lambda d: d.accept())
+
+                        ai_selectors = await agent.run(
+                            page, self.url, self.user_id, self.password,
+                            progress=self._progress,
+                        )
+                        # AI 결과를 기존 셀렉터에 병합 (AI가 찾은 것만 덮어쓰기)
+                        if ai_selectors:
+                            for key in ["login", "search", "table", "confirm"]:
+                                ai_part = ai_selectors.get(key, {})
+                                if ai_part:
+                                    existing = all_selectors.get(key, {})
+                                    existing.update(ai_part)
+                                    all_selectors[key] = existing
+                            all_selectors["auto_detected"] = True
+                            all_selectors["ai_agent_used"] = True
+                            self._progress("AI 시각 에이전트 분석 완료")
+                    else:
+                        self._progress("Claude API 키 없음 — AI 에이전트 사용 불가")
+                except Exception as e:
+                    self._progress(f"AI 에이전트 오류: {e}")
 
         except Exception as e:
             self._progress(f"사이트 분석 오류: {e}")
@@ -1336,6 +1376,9 @@ class GenericWholesaler(WholesalerBase):
                         'input[value*="담기"]',
                         'button:has-text("담기")',
                         'button:has-text("장바구니")',
+                        'a:has-text("추가")',
+                        'a:has-text("담기")',
+                        'span:has-text("추가")',
                     ]:
                         try:
                             btn = await page.query_selector(sel)
@@ -1543,6 +1586,7 @@ class GenericWholesaler(WholesalerBase):
 
         if not rows:
             result["message"] = "검색 결과 없음"
+            result["out_of_stock"] = True
             self._progress(f"  [{insurance_code}] 검색 결과 없음 ({idx}/{total})")
             return result
 
@@ -1555,6 +1599,32 @@ class GenericWholesaler(WholesalerBase):
             # 행 다시 조회
             row_sel = table.get("result_rows", "table tbody tr")
             rows = await page.query_selector_all(row_sel)
+
+        # stock_col 등 누락 시 헤더 재탐지
+        if "stock_col_idx" not in table and rows:
+            try:
+                first_table = await rows[0].evaluate_handle('el => el.closest("table")')
+                headers = await first_table.query_selector_all('thead th')
+                if not headers:
+                    headers = await first_table.query_selector_all('tr:first-child th')
+                header_texts = []
+                for th in headers:
+                    text = (await th.inner_text()).strip().replace("\n", " ")
+                    header_texts.append(text)
+                if header_texts:
+                    for i, header in enumerate(header_texts):
+                        header_lower = header.lower()
+                        for col_type, keywords in self.HEADER_MAP.items():
+                            for kw in keywords:
+                                if kw.lower() in header_lower:
+                                    key = f"{col_type}_col_idx"
+                                    if key not in table:
+                                        table[key] = i
+                                    break
+                    self._selectors["table"] = table
+                    self._save_selectors(self._selectors)
+            except Exception:
+                pass
 
         unit_col = table.get("unit_col_idx")
         name_col = table.get("name_col_idx")
@@ -1622,7 +1692,19 @@ class GenericWholesaler(WholesalerBase):
                 })
 
         if not candidates:
-            # 규격 파싱 실패 — 첫 번째 행으로 폴백
+            # 재고 컬럼이 있고 전부 재고 0이면 → 품절
+            if stock_col is not None:
+                drug_name = ""
+                if name_col is not None and len(await rows[0].query_selector_all('td')) > name_col:
+                    cells = await rows[0].query_selector_all('td')
+                    drug_name = (await cells[name_col].inner_text()).strip()
+                result["drug_name"] = drug_name
+                result["message"] = "재고 없음"
+                result["out_of_stock"] = True
+                self._progress(f"  [{insurance_code}] 재고 없음 ({idx}/{total})")
+                return result
+
+            # 재고 컬럼 없으면 규격 파싱 실패 — 첫 번째 행으로 폴백
             pack_size = preferred_unit or 1
             drug_name = ""
             if name_col is not None and len(await rows[0].query_selector_all('td')) > name_col:
@@ -1809,10 +1891,15 @@ class GenericWholesaler(WholesalerBase):
         if success_count > 0:
             return result  # 일부 성공 → 셀렉터 문제 아님
 
+        # 품절/재고 관련 실패면 재분석 불필요
+        all_oos = all(r.get("out_of_stock") for r in results if not r.get("success"))
+        if all_oos and results:
+            return result
+
         # 사유 분석: 셀렉터/구조 관련 실패인지 판별
         fail_msgs = " ".join(r.get("message", "") for r in results)
         selector_issue = any(kw in fail_msgs for kw in [
-            "셀렉터", "버튼을 찾을 수 없음", "검색 결과 없음",
+            "셀렉터", "버튼을 찾을 수 없음",
             "장바구니에 추가되지 않음", "담기 버튼",
         ])
         if not selector_issue:

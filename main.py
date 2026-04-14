@@ -9,10 +9,10 @@ if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtWidgets import (
-    QApplication, QDialog, QLabel, QMainWindow,
-    QProgressBar, QTabWidget, QVBoxLayout,
+    QApplication, QDialog, QLabel, QMainWindow, QMenu,
+    QProgressBar, QSystemTrayIcon, QTabWidget, QVBoxLayout,
 )
 
 from tabs.board_tab import BoardTab
@@ -139,11 +139,63 @@ class PharmAutoWindow(QMainWindow):
         super().__init__()
         self.setMinimumSize(1200, 750)
         self.resize(1400, 850)
+        self._force_quit = False
 
         self._update_title()
+        self._init_tray()
         self._init_tabs()
         self._init_scheduler()
         self.setStyleSheet(GLOBAL_STYLE)
+
+    def _init_tray(self):
+        """시스템 트레이 아이콘 + 메뉴 설정."""
+        icon_path = os.path.join(ROOT_DIR, "ui", "icons", "pharmauto.ico")
+        icon = QIcon(icon_path) if os.path.exists(icon_path) else QIcon()
+
+        self._tray = QSystemTrayIcon(icon, self)
+        self._tray.setToolTip("PharmAuto - 예약 자동주문 실행 중")
+
+        tray_menu = QMenu()
+        show_action = tray_menu.addAction("PharmAuto 열기")
+        show_action.triggered.connect(self._show_from_tray)
+        tray_menu.addSeparator()
+        quit_action = tray_menu.addAction("완전히 종료")
+        quit_action.triggered.connect(self._quit_app)
+
+        self._tray.setContextMenu(tray_menu)
+        self._tray.activated.connect(self._on_tray_activated)
+        self._tray.show()
+
+    def _show_from_tray(self):
+        """트레이에서 창 복원."""
+        self.showNormal()
+        self.activateWindow()
+
+    def _on_tray_activated(self, reason):
+        """트레이 아이콘 더블클릭 시 창 복원."""
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self._show_from_tray()
+
+    def _quit_app(self):
+        """트레이 메뉴 '완전히 종료' — 확실한 프로세스 종료.
+
+        1) 데드맨 스위치: 별도 스레드에서 3초 후 강제 os._exit
+           → Qt C코드가 GIL 잡고 멈춰도 프로세스 종료 보장
+        2) 정상 경로: 정리 후 즉시 os._exit
+        """
+        import threading
+        threading.Timer(3.0, lambda: os._exit(1)).start()
+        try:
+            self._tray.hide()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, '_scheduler'):
+                self._scheduler.stop()
+                self._scheduler.wait(2000)
+        except Exception:
+            pass
+        os._exit(0)
 
     def _update_title(self):
         import json
@@ -223,20 +275,87 @@ class PharmAutoWindow(QMainWindow):
             lambda msg: self.order_tab.status_label.setText(msg)
         )
         self._scheduler.order_finished.connect(self._on_scheduled_order_done)
-        self._scheduler.order_error.connect(
-            lambda msg: self.order_tab.status_label.setText(f"예약 주문 실패: {msg}")
-        )
+        self._scheduler.order_error.connect(self._on_scheduled_order_error)
         self._scheduler.unconfigured_drugs.connect(self._on_unconfigured_drugs)
         self._scheduler.oversize_confirm.connect(self._on_oversize_confirm)
         self._scheduler.start()
 
-    def _on_scheduled_order_done(self, results):
-        total = sum(len(r.get("items", [])) for r in results)
-        failed = sum(len(r.get("failed_items", [])) for r in results)
+    def _on_scheduled_order_done(self, results, retry_results):
+        # 성공/실패/품절 집계
+        success_items = []
+        oos_items = []
+        failed_items = []
+        for r in results:
+            for it in r.get("success_items", []):
+                success_items.append(it)
+            for it in r.get("failed_items", []):
+                failed_items.append(it)
+            for it in r.get("oos_items", []):
+                oos_items.append(it)
+
+        retry_ok = [rr for rr in retry_results if rr.get("success")]
+        retry_fail = [rr for rr in retry_results if not rr.get("success")]
+
+        # 품절 코드 제외한 일반 실패
+        oos_codes = set(it.get("insurance_code", "") for it in oos_items)
+        normal_fail = [it for it in failed_items
+                       if it.get("insurance_code", "") not in oos_codes]
+
+        total_ok = len(success_items) + len(retry_ok)
+        total_fail = len(normal_fail) + len(retry_fail)
+
+        # 상태바 업데이트
         self.order_tab.status_label.setText(
-            f"예약 자동 주문 완료 - {total - failed}개 성공, {failed}개 실패"
+            f"예약 자동 주문 완료 - 성공 {total_ok}건 / 실패 {total_fail}건"
         )
         self.order_tab._load_order_history()
+
+        # 트레이 팝업 알림 구성
+        lines = []
+        if success_items:
+            names = ", ".join(it.get("drug_name", "")[:8] for it in success_items[:5])
+            extra = f" 외 {len(success_items) - 5}건" if len(success_items) > 5 else ""
+            lines.append(f"주문 완료 {len(success_items)}건: {names}{extra}")
+
+        if retry_ok:
+            for rr in retry_ok:
+                name = rr["item"].get("drug_name", "")[:8]
+                lines.append(f"품절→대체 성공: {name} ({rr['original_ws']}→{rr['retry_ws']})")
+
+        if retry_fail:
+            names = ", ".join(rr["item"].get("drug_name", "")[:8] for rr in retry_fail)
+            lines.append(f"전체 품절 {len(retry_fail)}건: {names}")
+
+        if normal_fail:
+            names = ", ".join(it.get("drug_name", "")[:8] for it in normal_fail[:3])
+            lines.append(f"주문 실패 {len(normal_fail)}건: {names}")
+
+        if not lines:
+            lines.append("처리된 항목이 없습니다.")
+
+        # 품절이 있으면 경고 아이콘, 아니면 정보 아이콘
+        if retry_fail:
+            icon_type = QSystemTrayIcon.MessageIcon.Warning
+        elif normal_fail:
+            icon_type = QSystemTrayIcon.MessageIcon.Warning
+        else:
+            icon_type = QSystemTrayIcon.MessageIcon.Information
+
+        self._tray.showMessage(
+            "PharmAuto 예약 주문 결과",
+            "\n".join(lines),
+            icon_type,
+            10000,
+        )
+
+    def _on_scheduled_order_error(self, msg):
+        self.order_tab.status_label.setText(f"예약 주문 실패: {msg}")
+        self._tray.showMessage(
+            "PharmAuto 예약 주문 오류",
+            f"주문 처리 중 오류가 발생했습니다.\n{msg[:100]}",
+            QSystemTrayIcon.MessageIcon.Critical,
+            10000,
+        )
 
     def _on_oversize_confirm(self, oversize_items):
         """스케줄러에서 4배 초과 약품 확인 요청 → 다이얼로그 표시."""
@@ -257,10 +376,18 @@ class PharmAutoWindow(QMainWindow):
         )
 
     def closeEvent(self, event):
-        if hasattr(self, '_scheduler'):
-            self._scheduler.stop()
-            self._scheduler.wait(2000)
-        event.accept()
+        if self._force_quit:
+            self._quit_app()  # 동일한 강제 종료 경로 사용
+        else:
+            # X 버튼 → 트레이로 숨기기
+            event.ignore()
+            self.hide()
+            self._tray.showMessage(
+                "PharmAuto",
+                "트레이에서 실행 중입니다. 예약 자동주문이 계속 동작합니다.",
+                QSystemTrayIcon.MessageIcon.Information,
+                2000,
+            )
 
 
 def _check_and_apply_update(app: QApplication):
@@ -280,28 +407,107 @@ def _check_and_apply_update(app: QApplication):
     # 업데이트 성공 시 restart_app()으로 프로세스 교체되므로 여기에 도달하면 실패한 것
 
 
+_lock_handle = None  # 독점 파일 핸들 — 프로세스 종료 시 OS가 자동 해제+삭제
+
+
 def _is_already_running() -> bool:
-    """Named Mutex로 이미 실행 중인 인스턴스가 있는지 확인한다."""
+    """독점 파일 잠금으로 이미 실행 중인 인스턴스가 있는지 확인한다.
+
+    Windows CreateFileW(share=0) + FILE_FLAG_DELETE_ON_CLOSE:
+    - 프로세스가 살아있는 동안 다른 프로세스가 파일을 열 수 없음
+    - 프로세스가 어떻게 죽든 (정상/crash/kill) OS가 핸들 닫고 파일 삭제
+    - 명시적 해제/정리 코드 불필요
+    """
+    global _lock_handle
     import ctypes
-    kernel32 = ctypes.windll.kernel32
-    mutex = kernel32.CreateMutexW(None, False, "PharmAuto_SingleInstance_Mutex")
-    # ERROR_ALREADY_EXISTS = 183
-    return kernel32.GetLastError() == 183
+    lock_path = os.path.join(os.environ.get("TEMP", "."), "PharmAuto.lock")
+    GENERIC_WRITE = 0x40000000
+    CREATE_ALWAYS = 2
+    FILE_FLAG_DELETE_ON_CLOSE = 0x04000000
+    INVALID_HANDLE = -1
+
+    handle = ctypes.windll.kernel32.CreateFileW(
+        lock_path, GENERIC_WRITE,
+        0,       # dwShareMode=0 → 독점 (다른 프로세스 접근 불가)
+        None,    # lpSecurityAttributes
+        CREATE_ALWAYS,
+        FILE_FLAG_DELETE_ON_CLOSE,
+        None,
+    )
+    if handle == INVALID_HANDLE:
+        return True  # 잠금 실패 → 이미 실행 중
+    _lock_handle = handle  # 핸들을 전역에 보관 (GC 방지)
+    return False
+
+
+def _bring_existing_window():
+    """이미 실행 중인 PharmAuto 창을 찾아서 앞으로 가져온다."""
+    import ctypes
+    import ctypes.wintypes
+
+    user32 = ctypes.windll.user32
+
+    # PharmAuto 타이틀을 가진 윈도우 찾기
+    hwnd = user32.FindWindowW(None, None)
+    target = None
+
+    # EnumWindows 콜백으로 PharmAuto 창 찾기
+    EnumWindowsProc = ctypes.WINFUNCTYPE(
+        ctypes.wintypes.BOOL, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM
+    )
+
+    def callback(hwnd, _):
+        nonlocal target
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length > 0:
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buf, length + 1)
+            if "PharmAuto" in buf.value:
+                target = hwnd
+                return False  # 찾으면 중단
+        return True
+
+    user32.EnumWindows(EnumWindowsProc(callback), 0)
+
+    if target:
+        SW_RESTORE = 9
+        user32.ShowWindow(target, SW_RESTORE)
+        user32.SetForegroundWindow(target)
+    else:
+        # 창이 숨겨져 있어서 못 찾는 경우 — 알림만 표시
+        from PyQt6.QtWidgets import QMessageBox
+        _app = QApplication(sys.argv)
+        QMessageBox.information(
+            None, "PharmAuto",
+            "PharmAuto가 트레이에서 실행 중입니다.\n"
+            "시스템 트레이(▲)에서 아이콘을 더블클릭하세요."
+        )
+        _app.quit()
 
 
 def main():
     # DPI 스케일링 대응
     os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
 
-    # 단일 인스턴스 보장
+    # 단일 인스턴스 보장 — 이미 실행 중이면 기존 창 복원
     if _is_already_running():
-        from PyQt6.QtWidgets import QApplication, QMessageBox
-        _app = QApplication(sys.argv)
-        QMessageBox.warning(None, "PharmAuto", "이미 실행 중입니다.")
+        _bring_existing_window()
         sys.exit(0)
+
+    # 로깅 시스템 초기화 — 모든 print/에러를 파일에 기록
+    from core.logger import setup_global_logging, get_logger
+    setup_global_logging()
+    log = get_logger()
+    from core.version import VERSION
+    log.info(f"PharmAuto v{VERSION} 시작")
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+
+    # 앱 아이콘 설정 (작업표시줄 + 타이틀바)
+    icon_path = os.path.join(ROOT_DIR, "ui", "icons", "pharmauto.ico")
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
 
     font = QFont("Malgun Gothic", 10)
     font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)

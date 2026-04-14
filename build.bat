@@ -15,8 +15,10 @@ echo [2/6] Playwright Chromium 확인 중...
 playwright install chromium >nul 2>&1
 
 :: 3. 아이콘 확인
-if not exist pharmauto.ico (
-    echo [3/6] 아이콘 파일 없음 - 기본 아이콘 사용
+if not exist ui\icons\pharmauto.ico (
+    echo [3/6] 경고: 아이콘 파일 없음 (ui\icons\pharmauto.ico)
+    pause
+    exit /b 1
 ) else (
     echo [3/6] 아이콘 파일 확인 완료
 )

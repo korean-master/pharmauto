@@ -28,7 +28,7 @@ class OrderScheduler(QThread):
     """
     order_started = pyqtSignal()
     order_progress = pyqtSignal(str)
-    order_finished = pyqtSignal(list)
+    order_finished = pyqtSignal(list, list)  # (results, retry_results)
     order_error = pyqtSignal(str)
     unconfigured_drugs = pyqtSignal(list)
     oversize_confirm = pyqtSignal(list)  # 4배 초과 약품 확인 요청
@@ -37,22 +37,27 @@ class OrderScheduler(QThread):
         super().__init__()
         self._timer = None
         self._running = True
+        self._stop_event = threading.Event()
         self._executed_today = set()  # 오늘 이미 실행한 시간들
         self._oversize_event = threading.Event()
         self._oversize_choices = {}  # UI에서 응답받을 딕셔너리
 
     def run(self):
         """1분마다 예약 시간 체크."""
-        import time
         while self._running:
             try:
                 self._check_schedule()
             except Exception as e:
                 print(f"[스케줄러] 오류: {e}")
-            time.sleep(60)
+            # 1초 단위로 끊어서 대기 — stop() 호출 시 빠르게 종료
+            for _ in range(60):
+                if not self._running:
+                    return
+                self._stop_event.wait(1)
 
     def stop(self):
         self._running = False
+        self._stop_event.set()
 
     def set_oversize_choices(self, choices: dict):
         """UI에서 사용자 선택 결과를 전달받는다.
@@ -172,31 +177,34 @@ class OrderScheduler(QThread):
 
             if not configured_items:
                 self.order_progress.emit("주문할 약품 없음")
-                self.order_finished.emit([])
+                self.order_finished.emit([], [])
                 return
 
             # ── 일반 / 규격확인 분리 ──
             normal_items, oversize_items = self._split_oversize(configured_items)
 
             all_results = []
+            all_retry = []
 
             # ── Phase 1: 일반 아이템 즉시 주문 ──
             if normal_items:
-                results = self._place_and_update(normal_items, settings)
+                results, retry = self._place_and_update(normal_items, settings)
                 all_results.extend(results)
+                all_retry.extend(retry)
 
             # ── Phase 2: 규격확인 필요 아이템 → UI 확인 → 별도 주문 ──
             if oversize_items:
-                oversize_results = self._handle_oversize_order(
+                oversize_results, oversize_retry = self._handle_oversize_order(
                     oversize_items, settings
                 )
                 all_results.extend(oversize_results)
+                all_retry.extend(oversize_retry)
 
             # 알림 발송
             from core.notification import send_order_complete_notification
             send_order_complete_notification(all_results)
 
-            self.order_finished.emit(all_results)
+            self.order_finished.emit(all_results, all_retry)
 
         except Exception as e:
             self.order_error.emit(str(e))
@@ -291,7 +299,7 @@ class OrderScheduler(QThread):
     # ────── 규격확인 아이템 처리 ──────
 
     def _handle_oversize_order(self, oversize_items: list[dict],
-                               settings: dict) -> list[dict]:
+                               settings: dict) -> tuple[list[dict], list[dict]]:
         """UI에 규격 확인을 요청하고, 응답이 오면 별도 주문한다."""
         oversize_codes = [it["drug_name"] for it in oversize_items]
         self.order_progress.emit(
@@ -309,7 +317,7 @@ class OrderScheduler(QThread):
             self.order_progress.emit(
                 f"규격 미선택 — {len(oversize_items)}건 주문 보류"
             )
-            return []
+            return [], []
 
         # 사용자 선택 반영
         for item in oversize_items:
@@ -369,4 +377,4 @@ class OrderScheduler(QThread):
                 f"품절 재주문: 성공 {ok}건 / 실패 {fail}건"
             )
 
-        return results
+        return results, retry_results
