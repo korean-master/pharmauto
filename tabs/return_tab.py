@@ -161,9 +161,9 @@ class ReturnTab(QWidget):
 
         # 검색 결과 테이블
         self.result_table = QTableWidget()
-        self.result_table.setColumnCount(6)
+        self.result_table.setColumnCount(7)
         self.result_table.setHorizontalHeaderLabels(
-            ["출처", "약품명", "수량", "도매상", "주문일", "선택"]
+            ["출처", "약품명", "로트번호", "수량", "도매상", "주문일", "선택"]
         )
         self.result_table.verticalHeader().setVisible(False)
         self.result_table.setShowGrid(False)
@@ -174,11 +174,13 @@ class ReturnTab(QWidget):
         rh.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         rh.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
         rh.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
+        rh.setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
         self.result_table.setColumnWidth(0, 90)
-        self.result_table.setColumnWidth(2, 70)
-        self.result_table.setColumnWidth(3, 100)
+        self.result_table.setColumnWidth(2, 100)
+        self.result_table.setColumnWidth(3, 70)
         self.result_table.setColumnWidth(4, 100)
-        self.result_table.setColumnWidth(5, 70)
+        self.result_table.setColumnWidth(5, 100)
+        self.result_table.setColumnWidth(6, 70)
         self.result_table.setMinimumHeight(150)
         self.result_table.setMaximumHeight(250)
         self.result_table.hide()
@@ -302,6 +304,8 @@ class ReturnTab(QWidget):
             self.status_label.setStyleSheet(STATUS_LABEL)
 
         self.result_table.setRowCount(len(results))
+        matched_bg = QColor("#EBF5FF")  # 매칭 행 배경색 (연한 파랑)
+
         for row, r in enumerate(results):
             is_matched = r.get("matched", False)
 
@@ -318,24 +322,36 @@ class ReturnTab(QWidget):
             name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.result_table.setItem(row, 1, name_item)
 
+            lot_item = QTableWidgetItem(r.get("lot_number", ""))
+            lot_item.setFlags(lot_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            lot_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.result_table.setItem(row, 2, lot_item)
+
             qty_item = QTableWidgetItem(str(r.get("qty", "")))
             qty_item.setFlags(qty_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             qty_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.result_table.setItem(row, 2, qty_item)
+            self.result_table.setItem(row, 3, qty_item)
 
             ws_item = QTableWidgetItem(r.get("wholesaler_name", ""))
             ws_item.setFlags(ws_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.result_table.setItem(row, 3, ws_item)
+            self.result_table.setItem(row, 4, ws_item)
 
             date_item = QTableWidgetItem(r.get("order_date", ""))
             date_item.setFlags(date_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             date_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.result_table.setItem(row, 4, date_item)
+            self.result_table.setItem(row, 5, date_item)
 
             sel_btn = QPushButton("선택")
             sel_btn.setStyleSheet(btn_small_primary())
             sel_btn.clicked.connect(lambda _, idx=row: self._on_select(idx))
-            self.result_table.setCellWidget(row, 5, sel_btn)
+            self.result_table.setCellWidget(row, 6, sel_btn)
+
+            # matched 행 배경색 강조
+            if is_matched:
+                for col in range(6):
+                    item = self.result_table.item(row, col)
+                    if item:
+                        item.setBackground(matched_bg)
 
             self.result_table.setRowHeight(row, 40)
 
