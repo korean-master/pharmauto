@@ -376,18 +376,8 @@ class PharmAutoWindow(QMainWindow):
         )
 
     def closeEvent(self, event):
-        if self._force_quit:
-            self._quit_app()  # 동일한 강제 종료 경로 사용
-        else:
-            # X 버튼 → 트레이로 숨기기
-            event.ignore()
-            self.hide()
-            self._tray.showMessage(
-                "PharmAuto",
-                "트레이에서 실행 중입니다. 예약 자동주문이 계속 동작합니다.",
-                QSystemTrayIcon.MessageIcon.Information,
-                2000,
-            )
+        # X 버튼 = 완전히 종료 (트레이 메뉴 "완전히 종료"와 동일)
+        self._quit_app()
 
 
 def _check_and_apply_update(app: QApplication):
