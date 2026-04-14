@@ -314,10 +314,10 @@ class BaekjeWholesaler(WholesalerBase):
             except Exception:
                 pass
 
-            # 기간을 5년으로 설정
-            btn_5y = page.locator('button:has-text("5년")')
-            if await btn_5y.count() > 0:
-                await btn_5y.click(force=True)
+            # 기간을 최대(3년)로 설정
+            btn_period = page.locator('button:has-text("3년")')
+            if await btn_period.count() > 0:
+                await btn_period.first.click(force=True)
                 await page.wait_for_timeout(500)
 
             # 약품명 검색
@@ -348,7 +348,8 @@ class BaekjeWholesaler(WholesalerBase):
             # 키워드 필터링
             search_keywords = [k.strip() for k in drug_name.split() if k.strip()]
 
-            # 메인 테이블 (첫 번째): 품명, 입고, 규격, 수량, 반품, 거래회수, 단가, 이력, 반품가능수량
+            # 메인 테이블 (테이블0): 품명[0], 규격[1], [2], 수량[3], 반품[4],
+            #   거래처[5], 단가[6], 이력[7], 반품가능수량[8]
             if table_count > 0:
                 main_rows = all_tables.nth(0).locator("tbody tr")
                 main_count = await main_rows.count()
@@ -362,9 +363,7 @@ class BaekjeWholesaler(WholesalerBase):
                             continue
 
                         drug = (await cells.nth(0).inner_text()).strip()
-                        input_date = (await cells.nth(1).inner_text()).strip()
-                        spec = (await cells.nth(2).inner_text()).strip()
-                        qty_text = (await cells.nth(3).inner_text()).strip()
+                        spec = (await cells.nth(1).inner_text()).strip()
                         returnable = (await cells.nth(8).inner_text()).strip() if cell_count > 8 else ""
 
                         if not drug or "없습니다" in drug or "검색" in drug:
@@ -379,24 +378,77 @@ class BaekjeWholesaler(WholesalerBase):
                         if not all(kw.lower() in drug_lower for kw in search_keywords):
                             continue
 
-                        result = {
-                            "drug_name": drug,
-                            "order_date": input_date,
-                            "spec": spec,
-                            "qty": self._extract_number(qty_text),
-                            "returnable_qty": self._extract_number(returnable),
-                            "lot_number": "",
-                            "wholesaler_id": "baekje",
-                            "wholesaler_name": "백제약품",
-                            "source": "백제약품",
-                            "matched": False,
-                        }
-                        results.append(result)
+                        # 행 클릭해서 상세(주문이력) 테이블 로드
+                        await row.click()
+                        await page.wait_for_timeout(2000)
+
+                        # 상세 테이블의 기간도 3년으로 설정
+                        detail_period = page.locator('button:has-text("3년")')
+                        if await detail_period.count() > 1:
+                            await detail_period.nth(1).click(force=True)
+                            await page.wait_for_timeout(2000)
+
+                        # 상세 테이블(테이블1)에서 주문일자/로트번호 파싱
+                        detail_table = page.locator("table.q-table").nth(1)
+                        detail_rows = detail_table.locator("tbody tr")
+                        detail_count = await detail_rows.count()
+
+                        if detail_count == 0 or "없습니다" in (await detail_rows.nth(0).inner_text()):
+                            # 주문이력 없으면 메인 정보만으로 결과 추가
+                            results.append({
+                                "drug_name": drug,
+                                "order_date": "",
+                                "spec": spec,
+                                "qty": 0,
+                                "returnable_qty": self._extract_number(returnable),
+                                "lot_number": "",
+                                "wholesaler_id": "baekje",
+                                "wholesaler_name": "백제약품",
+                                "source": "백제약품",
+                                "matched": False,
+                            })
+                            continue
+
+                        for d in range(min(detail_count, 20)):
+                            try:
+                                d_cells = detail_rows.nth(d).locator("td")
+                                d_cc = await d_cells.count()
+                                if d_cc < 4:
+                                    continue
+                                d_date = (await d_cells.nth(0).inner_text()).strip()
+                                d_expiry = (await d_cells.nth(2).inner_text()).strip() if d_cc > 2 else ""
+                                d_lot = (await d_cells.nth(3).inner_text()).strip() if d_cc > 3 else ""
+                                d_qty = (await d_cells.nth(4).inner_text()).strip() if d_cc > 4 else ""
+
+                                if not d_date or "없습니다" in d_date:
+                                    continue
+                                if not re.match(r'^\d{4}-\d{2}-\d{2}', d_date):
+                                    continue
+
+                                lot_matched = (
+                                    lot_number and d_lot and
+                                    lot_number.lower() in d_lot.lower()
+                                )
+
+                                results.append({
+                                    "drug_name": drug,
+                                    "order_date": d_date,
+                                    "spec": spec,
+                                    "qty": self._extract_number(d_qty),
+                                    "returnable_qty": self._extract_number(returnable),
+                                    "lot_number": d_lot,
+                                    "wholesaler_id": "baekje",
+                                    "wholesaler_name": "백제약품",
+                                    "source": "백제약품",
+                                    "matched": lot_matched,
+                                })
+                            except Exception:
+                                continue
+
                     except Exception:
                         continue
 
-            # 상세 테이블 (두 번째): 주문일자, 단가, 유효기간, 제조번호, 납입수량
-            # 로트번호 검색 시 여기서 정확한 주문일자/제조번호 확인 가능
+            # (하위 호환) 로트번호 직접 검색 — 상세 테이블에서 추가 매칭
             if table_count > 1 and has_lot:
                 detail_rows = all_tables.nth(1).locator("tbody tr")
                 detail_count = await detail_rows.count()

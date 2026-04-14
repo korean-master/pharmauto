@@ -343,10 +343,12 @@ def _search_samwon_history(drug_name: str, lot_number: str = "",
 
 def search_wholesaler_history(drug_name: str, lot_number: str = "",
                               progress_callback=None) -> list[dict]:
-    """모든 등록 도매상 사이트에서 입고이력을 검색한다."""
+    """모든 등록 도매상 사이트에서 입고이력을 검색한다.
+
+    전용 클래스(백제/지오영)에서 실패하면 GenericWholesaler 자동 탐지로 재시도.
+    """
     all_results = []
 
-    # 전용 클래스가 있는 도매상
     for wid, cls, config in _get_wholesaler_classes():
         try:
             ws = cls(config)
@@ -357,6 +359,24 @@ def search_wholesaler_history(drug_name: str, lot_number: str = "",
         except Exception as e:
             if progress_callback:
                 progress_callback(f"{wid} 검색 실패: {e}")
+
+            # 전용 클래스 실패 → GenericWholesaler 자동 탐지로 재시도
+            from wholesalers.generic import GenericWholesaler
+            if cls is not GenericWholesaler:
+                try:
+                    if progress_callback:
+                        progress_callback(f"{wid} 자동 탐지 모드로 재시도...")
+                    fallback_config = dict(config)
+                    fallback_config["_wid"] = wid
+                    ws2 = GenericWholesaler(fallback_config)
+                    if progress_callback:
+                        ws2.set_progress_callback(progress_callback)
+                    results2 = ws2.search_history(drug_name, lot_number,
+                                                  headless=True)
+                    all_results.extend(results2)
+                except Exception as e2:
+                    if progress_callback:
+                        progress_callback(f"{wid} 자동 탐지도 실패: {e2}")
 
     return all_results
 
