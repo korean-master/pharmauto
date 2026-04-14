@@ -61,37 +61,24 @@ def generate_codes(count: int = 10) -> list[dict]:
 
 # ────────────────────── 코드 검증 ──────────────────────
 
-def _validate_code_format(code: str) -> bool:
-    """코드 형식이 올바른지 확인한다."""
-    code = code.strip().upper()
-    if not code.startswith("PHARMA-"):
-        return False
-    parts = code.split("-")
-    if len(parts) != 3:
-        return False
-    if len(parts[1]) != 4 or len(parts[2]) != 4:
-        return False
-    return all(c in "0123456789ABCDEF" for c in parts[1] + parts[2])
+_VALID_CODES = {"00001234"}  # 유효한 접속 코드 목록
 
 
 def verify_code(code: str) -> dict:
-    """활성화 코드를 검증한다.
+    """접속 코드를 검증한다.
 
     Returns:
         {"valid": bool, "message": str}
     """
-    code = code.strip().upper()
+    code = code.strip()
 
-    if not _validate_code_format(code):
-        return {"valid": False, "message": "코드 형식이 올바르지 않습니다"}
+    if not code:
+        return {"valid": False, "message": "접속 코드를 입력하세요"}
 
-    # 1. 온라인 검증 시도 (향후 서버 연동 지점)
-    # online_result = _verify_online(code)
-    # if online_result is not None:
-    #     return online_result
+    if code in _VALID_CODES:
+        return {"valid": True, "message": "인증 성공"}
 
-    # 2. 오프라인 검증: 형식만 맞으면 통과 (베타 단계)
-    return {"valid": True, "message": "활성화 성공"}
+    return {"valid": False, "message": "접속 코드가 올바르지 않습니다"}
 
 
 # ────────────────────── 활성화 상태 관리 ──────────────────────
@@ -131,11 +118,8 @@ def activate(code: str) -> dict:
 
     auth = {
         "activated": True,
-        "code": code.strip().upper(),
+        "code": code.strip(),
         "activated_at": datetime.now().isoformat(),
-        # 향후 확장 필드
-        "user_id": "",
-        "user_name": "",
         "license_type": "beta",
     }
 

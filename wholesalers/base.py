@@ -130,22 +130,25 @@ class WholesalerBase(ABC):
     # ────── Playwright lifecycle ──────
 
     async def _launch(self, headless: bool = True):
-        # PyInstaller 패키징 시 번들된 Chromium 경로 설정
-        if getattr(sys, 'frozen', False):
+        # 패키징(PyInstaller/Nuitka) 시 번들된 Chromium 경로 설정
+        if getattr(sys, 'frozen', False) or "__compiled__" in dir():
             bundle_dir = os.path.dirname(sys.executable)
-            # _internal 안에 있는 경우 (PyInstaller onedir)
             candidates = [
-                os.path.join(bundle_dir, "_internal", "playwright_browsers"),
                 os.path.join(bundle_dir, "playwright_browsers"),
+                os.path.join(bundle_dir, "_internal", "playwright_browsers"),
             ]
             for browsers_dir in candidates:
                 if os.path.exists(browsers_dir):
                     os.environ["PLAYWRIGHT_BROWSERS_PATH"] = browsers_dir
                     break
 
-        self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(headless=headless)
-        self._page = await self._browser.new_page()
+        try:
+            self._playwright = await async_playwright().start()
+            self._browser = await self._playwright.chromium.launch(headless=headless)
+            self._page = await self._browser.new_page()
+        except Exception as e:
+            print(f"[Playwright 오류] {e}")
+            raise RuntimeError("브라우저 연결에 실패했습니다. 프로그램을 재시작해 주세요.")
 
     async def _close(self):
         if self._browser:

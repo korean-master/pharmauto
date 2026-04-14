@@ -10,12 +10,11 @@ import sys
 from logging.handlers import RotatingFileHandler
 
 # 로그 파일 경로 — exe 빌드 시에도 data/ 폴더에 저장
-if getattr(sys, 'frozen', False):
+if getattr(sys, 'frozen', False) or "__compiled__" in dir():
     _BASE = os.path.dirname(sys.executable)
-    # PyInstaller onedir: _internal/data/
-    _DATA = os.path.join(_BASE, "_internal", "data")
+    _DATA = os.path.join(_BASE, "data")
     if not os.path.exists(_DATA):
-        _DATA = os.path.join(_BASE, "data")
+        _DATA = os.path.join(_BASE, "_internal", "data")
 else:
     _DATA = os.path.join(os.path.dirname(__file__), "..", "data")
 

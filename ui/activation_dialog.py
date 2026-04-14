@@ -52,8 +52,8 @@ class ActivationDialog(QDialog):
 
         layout.addSpacing(12)
 
-        # 활성화 코드 입력
-        code_label = QLabel("활성화 코드를 입력하세요")
+        # 접속 코드 입력
+        code_label = QLabel("접속 코드를 입력하세요")
         code_label.setStyleSheet(
             "font-size: 13px; font-weight: 600; color: #1A1A2E; "
             "font-family: 'Malgun Gothic';"
@@ -62,15 +62,16 @@ class ActivationDialog(QDialog):
         layout.addWidget(code_label)
 
         self._code_input = QLineEdit()
-        self._code_input.setPlaceholderText("PHARMA-XXXX-XXXX")
+        self._code_input.setPlaceholderText("00000000")
         self._code_input.setMinimumHeight(44)
         self._code_input.setStyleSheet(
-            "QLineEdit { font-size: 16px; font-family: 'Consolas'; "
+            "QLineEdit { font-size: 20px; font-family: 'Consolas'; "
             "padding: 10px; border: 2px solid #DFE1E6; border-radius: 8px; "
-            "letter-spacing: 2px; min-height: 24px; }"
+            "letter-spacing: 4px; min-height: 24px; text-align: center; }"
             "QLineEdit:focus { border-color: #4B6BFB; }"
         )
-        self._code_input.setMaxLength(16)
+        self._code_input.setMaxLength(8)
+        self._code_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._code_input.textChanged.connect(self._on_text_changed)
         self._code_input.returnPressed.connect(self._on_activate)
         layout.addWidget(self._code_input)
@@ -105,24 +106,15 @@ class ActivationDialog(QDialog):
         layout.addLayout(btn_row)
 
     def _on_text_changed(self, text: str):
-        # 자동 대문자 + 하이픈 포맷팅
-        clean = text.upper().replace("-", "").replace(" ", "")
-        if clean.startswith("PHARMA"):
-            clean = clean[6:]
-
-        if len(clean) >= 8:
-            clean = clean[:8]
-
-        if clean:
-            formatted = f"PHARMA-{clean[:4]}"
-            if len(clean) > 4:
-                formatted += f"-{clean[4:8]}"
+        # 숫자만 허용
+        digits = "".join(c for c in text if c.isdigit())
+        if digits != text:
             self._code_input.blockSignals(True)
-            self._code_input.setText(formatted)
-            self._code_input.setCursorPosition(len(formatted))
+            self._code_input.setText(digits)
+            self._code_input.setCursorPosition(len(digits))
             self._code_input.blockSignals(False)
 
-        self._activate_btn.setEnabled(len(clean) == 8)
+        self._activate_btn.setEnabled(len(digits) == 8)
         self._status.setText("")
 
     def _on_activate(self):
