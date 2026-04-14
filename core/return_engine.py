@@ -346,10 +346,26 @@ def search_wholesaler_history(drug_name: str, lot_number: str = "",
     """모든 등록 도매상 사이트에서 입고이력을 검색한다.
 
     전용 클래스(백제/지오영)에서 실패하면 GenericWholesaler 자동 탐지로 재시도.
+    삼원약품은 전용 검색 함수 사용.
     """
     all_results = []
+    samwon_done = False
 
     for wid, cls, config in _get_wholesaler_classes():
+        # 삼원약품은 전용 함수로 처리
+        if wid == "삼원약품" or (config.get("name", "") == "삼원약품"):
+            try:
+                from core.crypto import load_wholesalers_secure
+                sw_config = load_wholesalers_secure().get(wid, config)
+                results = _search_samwon_history(drug_name, lot_number,
+                                                sw_config, progress_callback)
+                all_results.extend(results)
+                samwon_done = True
+            except Exception as e:
+                if progress_callback:
+                    progress_callback(f"삼원약품 검색 실패: {e}")
+                samwon_done = True
+            continue
         try:
             ws = cls(config)
             if progress_callback:
