@@ -132,7 +132,7 @@ def download_and_apply(download_url: str, progress_callback=None,
 
 def restart_app():
     """앱을 재시작한다."""
-    if getattr(sys, 'frozen', False) or "__compiled__" in dir():
+    if not sys.executable.endswith(("python.exe", "python3.exe", "python")):
         subprocess.Popen([sys.executable], cwd=os.path.dirname(sys.executable))
     else:
         python = sys.executable

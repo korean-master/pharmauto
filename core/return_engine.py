@@ -225,7 +225,7 @@ def _search_samwon_history(drug_name: str, lot_number: str = "",
 
         pw_inst = await async_playwright().start()
 
-        if getattr(sys, 'frozen', False) or "__compiled__" in dir():
+        if "PLAYWRIGHT_BROWSERS_PATH" not in os.environ:
             bundle_dir = os.path.dirname(sys.executable)
             for _bdir in [
                 os.path.join(bundle_dir, "playwright_browsers"),

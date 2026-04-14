@@ -130,8 +130,8 @@ class WholesalerBase(ABC):
     # ────── Playwright lifecycle ──────
 
     async def _launch(self, headless: bool = True):
-        # 패키징(PyInstaller/Nuitka) 시 번들된 Chromium 경로 설정
-        if getattr(sys, 'frozen', False) or "__compiled__" in dir():
+        # 번들된 Chromium 경로 설정 (PyInstaller/Nuitka/개발 공통)
+        if "PLAYWRIGHT_BROWSERS_PATH" not in os.environ:
             bundle_dir = os.path.dirname(sys.executable)
             candidates = [
                 os.path.join(bundle_dir, "playwright_browsers"),
