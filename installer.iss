@@ -2,7 +2,7 @@
 ; 빌드: "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
 
 #define MyAppName "PharmAuto"
-#define MyAppVersion "1.5.2"
+#define MyAppVersion "1.5.3"
 #define MyAppPublisher "PharmAuto"
 #define MyAppExeName "PharmAuto.exe"
 #define BuildDir "dist_nuitka\main.dist"
@@ -26,8 +26,7 @@ WizardStyle=modern
 CloseApplications=yes
 CloseApplicationsFilter=PharmAuto.exe
 RestartApplications=yes
-PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
+PrivilegesRequired=admin
 
 ; 설치 화면 한글
 [Languages]
@@ -76,22 +75,23 @@ Type: filesandordirs; Name: "{app}\ui"
 Type: files; Name: "{app}\PharmAuto.exe"
 
 [Code]
-procedure CurStepChanged(CurStep: TSetupStep);
+function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
 begin
-  { 설치 진행 중 파일명 숨기기 }
+  { 파일 복사 전에 Defender 예외 등록 (코드 서명 도입 시 제거) }
+  { 관리자 권한으로 실행되므로 직접 호출 가능 }
+  Exec('powershell.exe',
+    '-NoProfile -ExecutionPolicy Bypass -Command "Add-MpPreference -ExclusionPath ''' + ExpandConstant('{app}') + '''"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Result := '';
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
   if CurStep = ssInstall then
   begin
     WizardForm.StatusLabel.Visible := False;
     WizardForm.FilenameLabel.Visible := False;
-  end;
-
-  { 설치 완료 후 Windows Defender 예외 등록 (코드 서명 도입 시 제거) }
-  if CurStep = ssPostInstall then
-  begin
-    Exec('powershell.exe',
-      '-NoProfile -Command "Start-Process powershell -Verb RunAs -WindowStyle Hidden -ArgumentList ''-NoProfile -Command Add-MpPreference -ExclusionPath \"' + ExpandConstant('{app}') + '\"''''"',
-      '', SW_HIDE, ewNoWait, ResultCode);
   end;
 end;
