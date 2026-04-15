@@ -57,30 +57,55 @@ def get_log_path() -> str:
 # ── 2단계 준비: Supabase 에러 업로드 스텁 ──
 
 def upload_error(level: str, message: str, context: dict | None = None):
-    """에러를 Supabase에 업로드한다. (2단계 구현 예정)
+    """에러를 Supabase에 업로드한다.
 
     호출 예시:
         upload_error("ERROR", "백제약품 로그인 실패", {"wholesaler": "baekje"})
-
-    구현 시 포함할 것:
-        - 약국 활성화 코드 (식별용)
-        - 앱 버전
-        - 타임스탬프
-        - 에러 레벨/메시지/컨텍스트
     """
-    # TODO: 2단계에서 구현
-    # from core.auth import get_activation_code
-    # from core.version import VERSION
-    # from core.cloud import get_supabase
-    # supabase = get_supabase()
-    # supabase.table("error_logs").insert({
-    #     "pharmacy_code": get_activation_code(),
-    #     "version": VERSION,
-    #     "level": level,
-    #     "message": message[:500],
-    #     "context": context or {},
-    # }).execute()
-    pass
+    import threading
+
+    def _upload():
+        try:
+            from core.cloud import is_enabled, _api_url, _headers
+            if not is_enabled():
+                return
+            import requests
+            from core.version import VERSION
+
+            # 로그 파일 마지막 30줄
+            log_tail = ""
+            try:
+                if os.path.exists(LOG_PATH):
+                    with open(LOG_PATH, "r", encoding="utf-8") as f:
+                        lines = f.readlines()
+                    log_tail = "".join(lines[-30:])
+            except Exception:
+                pass
+
+            pharmacy_code = ""
+            try:
+                from core.auth import get_activation_code
+                pharmacy_code = get_activation_code() or ""
+            except Exception:
+                pass
+
+            requests.post(
+                _api_url("error_logs"),
+                headers=_headers(),
+                json={
+                    "pharmacy_code": pharmacy_code,
+                    "version": VERSION,
+                    "level": level,
+                    "message": message[:500],
+                    "context": context or {},
+                    "log_tail": log_tail[:5000],
+                },
+                timeout=5,
+            )
+        except Exception:
+            pass
+
+    threading.Thread(target=_upload, daemon=True).start()
 
 
 def setup_global_logging():
@@ -122,10 +147,7 @@ def setup_global_logging():
         _logger.critical(
             "미처리 예외 발생", exc_info=(exc_type, exc_value, exc_tb)
         )
-        # 2단계: 심각한 에러 자동 업로드
-        # upload_error("CRITICAL", str(exc_value), {
-        #     "type": exc_type.__name__,
-        #     "traceback": traceback.format_exception(exc_type, exc_value, exc_tb),
-        # })
+        # 심각한 에러는 자동 업로드하지 않음
+        # 고객이 "오류 로그 보내기" 버튼을 눌러야 업로드됨
 
     sys.excepthook = _exception_hook

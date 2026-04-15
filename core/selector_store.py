@@ -21,14 +21,19 @@ def _local_path(wid: str) -> str:
     return os.path.join(SELECTORS_DIR, f"{_safe_filename(wid)}.json")
 
 
-def _extract_domain(wid: str, selectors: dict = None) -> str:
-    """도매상 ID 또는 셀렉터에서 도메인을 추출한다."""
+def _extract_domain(wid: str, selectors: dict = None, url: str = "") -> str:
+    """도매상의 정규화된 도메인을 추출한다."""
+    from core.cloud import normalize_domain
+    # URL 우선 (셀렉터 → 파라미터 → wid)
+    src = ""
     if selectors and selectors.get("url"):
-        from urllib.parse import urlparse
-        parsed = urlparse(selectors["url"])
-        if parsed.netloc:
-            return parsed.netloc
-    return wid
+        src = selectors["url"]
+    elif url:
+        src = url
+    else:
+        src = wid
+    normalized = normalize_domain(src)
+    return normalized if normalized and len(normalized) >= 3 else wid
 
 
 def load_selectors(wid: str, url: str = "") -> dict:
@@ -36,7 +41,7 @@ def load_selectors(wid: str, url: str = "") -> dict:
 
     조회 순서:
       1. 로컬 캐시 (config/selectors/{wid}.json)
-      2. 클라우드에서 다운로드 (wid → 도메인 → URL 도메인 순 시도)
+      2. 클라우드에서 다운로드 (정규화된 도메인으로 조회)
 
     Args:
         wid: 도매상 ID
@@ -51,20 +56,11 @@ def load_selectors(wid: str, url: str = "") -> dict:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
 
-    # 2. 클라우드에서 다운로드 — wid와 URL 도메인 둘 다 시도
+    # 2. 클라우드에서 다운로드 — URL 또는 wid로 정규화 조회
     try:
         from core.cloud import fetch_selectors
-
-        # wid로 먼저 시도
-        cloud_sel = fetch_selectors(wid)
-
-        # 못 찾으면 URL 도메인으로 시도
-        if not cloud_sel and url:
-            from urllib.parse import urlparse
-            domain = urlparse(url).netloc
-            if domain and domain != wid:
-                cloud_sel = fetch_selectors(domain)
-
+        # URL이 있으면 URL로, 없으면 wid로 조회 (내부에서 정규화됨)
+        cloud_sel = fetch_selectors(url or wid)
         if cloud_sel:
             save_selectors(wid, cloud_sel, upload=False)
             return cloud_sel
@@ -96,8 +92,8 @@ def save_selectors(wid: str, selectors: dict, upload: bool = True):
             try:
                 from core.cloud import upload_selectors
                 upload_selectors(domain, name, selectors)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[셀렉터] 클라우드 업로드 실패: {wid} - {e}")
 
         threading.Thread(target=_upload, daemon=True).start()
 

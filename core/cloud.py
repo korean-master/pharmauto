@@ -1,4 +1,4 @@
-"""Supabase 클라우드 동기화 — 약품 정보, 규격, 셀렉터 공유.
+"""Supabase 클라우드 동기화 - 약품 정보, 규격, 셀렉터 공유.
 
 사용자가 늘수록 데이터가 쌓여 전체 시스템이 개선되는 구조.
 서버 장애 시에도 로컬 데이터로 정상 동작한다.
@@ -173,26 +173,65 @@ def fetch_units(insurance_code: str) -> list[int]:
 
 # ────────────────────── 도매상 셀렉터 (wholesaler_selectors) ──────────────────────
 
+def normalize_domain(url_or_domain: str) -> str:
+    """URL이나 도메인에서 핵심 식별자를 추출한다.
+
+    어떤 형태로 입력하든 같은 사이트면 같은 값을 반환.
+    www.ibjp.kr -> ibjp, ibjp.co.kr -> ibjp, https://ibjp.co.kr/login -> ibjp
+    www.pharmbox.co.kr -> pharmbox, esehwa.co.kr -> esehwa
+    bpm.geoweb.kr -> geoweb
+    """
+    import re
+    s = url_or_domain.strip()
+    if not s:
+        return ""
+
+    # URL이면 도메인만 추출
+    if "/" in s or ":" in s:
+        from urllib.parse import urlparse
+        parsed = urlparse(s if "://" in s else f"http://{s}")
+        s = parsed.netloc or s
+    # 포트 제거
+    s = s.split(":")[0]
+    # www. 제거
+    s = re.sub(r"^www\.", "", s)
+    # 도메인 파트 분리
+    parts = s.split(".")
+    # TLD 제거: .kr, .com, .co.kr, .or.kr 등
+    tld_parts = {"kr", "com", "net", "org", "co", "or", "go", "ac", "pe"}
+    while len(parts) > 1 and parts[-1] in tld_parts:
+        parts.pop()
+    # 남은 것 중 마지막이 핵심 도메인 (bpm.geoweb -> geoweb)
+    return parts[-1] if parts else s
+
+
 def upload_selectors(domain: str, name: str, selectors: dict):
     """도매상 셀렉터를 서버에 기여한다 (upsert).
-    업로드 전 에 보안 진단을 통과해야 한다.
+
+    domain은 정규화하여 저장 - 같은 사이트는 항상 같은 키로 저장.
+    업로드 전 보안 검증 필수.
     """
-    if not is_enabled() or not domain:
+    if not is_enabled():
+        return
+    # 도메인 정규화
+    normalized = normalize_domain(domain)
+    if not normalized:
+        print(f"[클라우드] 도메인 추출 실패 - 업로드 취소 ({domain})")
         return
     # 업로드 전 보안 필터
     try:
         from core.selector_validator import validate_selectors
         if not validate_selectors(selectors):
-            print(f"[클라우드] 셀렉터 보안 검증 실패 — 업로드 취소 ({domain})")
+            print(f"[클라우드] 셀렉터 보안 검증 실패 - 업로드 취소 ({normalized})")
             return
     except Exception:
         pass
     try:
-        requests.post(
+        resp = requests.post(
             _api_url("wholesaler_selectors"),
             headers=_headers(),
             json={
-                "domain": domain,
+                "domain": normalized,
                 "name": name,
                 "login_sel": selectors.get("login", {}),
                 "search_sel": selectors.get("search", {}),
@@ -204,24 +243,32 @@ def upload_selectors(domain: str, name: str, selectors: dict):
             },
             timeout=5,
         )
-    except Exception:
-        pass
+        print(f"[클라우드] 셀렉터 업로드: {normalized} ({name}) - {resp.status_code}")
+    except Exception as e:
+        print(f"[클라우드] 셀렉터 업로드 실패: {normalized} - {e}")
 
 
 def fetch_selectors(domain: str) -> dict | None:
     """서버에서 도매상 셀렉터를 조회한다.
-    다운로드 후 보안 필터를 반드시 통과해야 한다 (서버 오염 시나리오 차단).
+
+    입력 도메인을 정규화하여 조회 - 같은 사이트면 항상 매칭됨.
+    다운로드 후 보안 필터 필수.
 
     Returns:
         셀렉터 dict (로컬 저장 형식과 동일) 또는 None
     """
     if not is_enabled() or not domain:
         return None
+
+    normalized = normalize_domain(domain)
+    if not normalized or len(normalized) < 3:
+        return None
+
     try:
         resp = requests.get(
             _api_url("wholesaler_selectors"),
             headers=_headers(),
-            params={"domain": f"eq.{domain}"},
+            params={"domain": f"eq.{normalized}"},
             timeout=5,
         )
         rows = resp.json()
@@ -236,11 +283,11 @@ def fetch_selectors(domain: str) -> dict | None:
             "auto_detected": row.get("auto_detected", False),
             "confidence": row.get("confidence", "provisional"),
         }
-        # 다운로드 후 보안 필터 (서버 오염 시나리오 차단 — 가장 중요)
+        # 다운로드 후 보안 필터 (서버 오염 시나리오 차단 - 가장 중요)
         try:
             from core.selector_validator import validate_selectors
             if not validate_selectors(result):
-                print(f"[클라우드] 다운로드 셀렉터 보안 검증 실패 — 폐기 ({domain})")
+                print(f"[클라우드] 다운로드 셀렉터 보안 검증 실패 - 폐기 ({domain})")
                 return None
         except Exception:
             pass
@@ -392,7 +439,7 @@ def sync_cloud_to_local():
 
     data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
 
-    # 1) 약품 캐시 보강 — 서버에만 있는 약품을 로컬에 추가
+    # 1) 약품 캐시 보강 - 서버에만 있는 약품을 로컬에 추가
     drug_cache_path = os.path.join(data_dir, "drug_cache.json")
     try:
         local_cache = {}
@@ -472,7 +519,7 @@ def start_background_sync():
 
 
 def _background_sync():
-    """업로드 → 다운로드 순서로 동기화."""
+    """Upload then download sync."""
     try:
         sync_local_to_cloud()
         sync_cloud_to_local()

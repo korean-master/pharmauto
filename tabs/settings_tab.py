@@ -613,6 +613,16 @@ class SettingsTab(QWidget):
         log_btn.clicked.connect(self._on_open_log)
         remote_btn_row.addWidget(log_btn)
 
+        send_log_btn = QPushButton("오류 로그 보내기")
+        send_log_btn.setStyleSheet(
+            f"QPushButton {{ font-size: 13px; padding: 10px 24px; "
+            f"background: #EF4444; color: white; border: none; "
+            f"border-radius: 8px; font-weight: 600; font-family: 'Malgun Gothic'; }}"
+            f"QPushButton:hover {{ background: #DC2626; }}"
+        )
+        send_log_btn.clicked.connect(self._on_send_log)
+        remote_btn_row.addWidget(send_log_btn)
+
         remote_btn_row.addStretch()
         remote_lay.addLayout(remote_btn_row)
 
@@ -817,6 +827,80 @@ class SettingsTab(QWidget):
                     f.write(f"[{timestamp}] {msg}\n")
                 print(msg)
 
+            def _upload_dedicated_selectors(self, wid, config, ws_class):
+                """전용 클래스의 셀렉터 정보를 클라우드에 공유한다."""
+                from urllib.parse import urlparse
+                domain = urlparse(config.get("url", "")).netloc
+                if not domain:
+                    return
+                name = config.get("name", wid)
+                # 전용 클래스의 기본 정보만 업로드 (다른 사용자가 Generic으로 참고)
+                selectors = {
+                    "login": {},
+                    "search": {},
+                    "table": {},
+                    "confirm": {},
+                    "auto_detected": False,
+                    "confidence": "verified",
+                    "dedicated_class": ws_class.__name__,
+                }
+                try:
+                    from core.cloud import upload_selectors
+                    upload_selectors(domain, name, selectors)
+                    self._write_log(f"  전용 클래스 정보 클라우드 공유 완료 ({domain})")
+                except Exception:
+                    pass
+
+            def _upload_diagnostic(self, wid, config, status, is_generic):
+                """연동 실패 시 진단 정보를 클라우드에 업로드한다."""
+                try:
+                    from core.cloud import is_enabled, _api_url, _headers
+                    if not is_enabled():
+                        return
+
+                    from datetime import datetime
+                    import requests as _req
+
+                    # 셀렉터 정보 수집
+                    selectors = {}
+                    try:
+                        from core.selector_store import load_selectors
+                        selectors = load_selectors(wid)
+                    except Exception:
+                        pass
+
+                    # 로그 파일에서 최근 50줄
+                    log_tail = ""
+                    try:
+                        log_path = os.path.join(
+                            os.path.dirname(__file__), "..", "data",
+                            "ws_test_log.txt")
+                        if os.path.exists(log_path):
+                            with open(log_path, "r", encoding="utf-8") as f:
+                                lines = f.readlines()
+                            log_tail = "".join(lines[-50:])
+                    except Exception:
+                        pass
+
+                    _req.post(
+                        _api_url("diagnostic_reports"),
+                        headers=_headers(),
+                        json={
+                            "wid": wid,
+                            "url": config.get("url", ""),
+                            "name": config.get("name", wid),
+                            "status": status,
+                            "is_generic": is_generic,
+                            "selectors": selectors,
+                            "log_tail": log_tail[:5000],
+                            "created_at": datetime.utcnow().isoformat(),
+                        },
+                        timeout=5,
+                    )
+                    self._write_log(f"  진단 정보 클라우드 업로드 완료")
+                except Exception as e:
+                    self._write_log(f"  진단 업로드 실패: {e}")
+
             def run(self):
                 import asyncio
 
@@ -868,9 +952,10 @@ class SettingsTab(QWidget):
 
                         if is_generic:
                             if attempt == 0:
-                                # 1회차: 휴리스틱 분석 (내부에서 실패 시 AI 에이전트 폴백)
+                                # 1회차: 클라우드 조회 → 없으면 휴리스틱 분석
                                 from core.selector_store import load_selectors
-                                cur_sel = load_selectors(self._wid)
+                                cur_sel = load_selectors(self._wid,
+                                                         url=config.get("url", ""))
                                 if not cur_sel or not cur_sel.get("auto_detected"):
                                     self._write_log(f"  셀렉터 없음 → 사이트 분석...")
                                     ws_analyze = ws_class(config)
@@ -890,6 +975,14 @@ class SettingsTab(QWidget):
                         if result["success"]:
                             last_status = "정상"
                             self._write_log(f"  성공! (총 {attempt + 1}회 시도)")
+
+                            # 전용 클래스도 셀렉터 정보를 클라우드에 공유
+                            if not is_generic:
+                                try:
+                                    self._upload_dedicated_selectors(
+                                        self._wid, config, ws_class)
+                                except Exception:
+                                    pass
 
                             # 이력 검색 설정이 없으면 별도 탐지 시도
                             if is_generic:
@@ -931,7 +1024,12 @@ class SettingsTab(QWidget):
                     self._write_log(traceback.format_exc())
                     last_status = "연동 오류"
 
-                # 상세는 로그에만 남김 — UI에는 기본 상태만 표시
+                # 연동 실패 시 진단 정보를 클라우드에 자동 업로드
+                if last_status != "정상":
+                    self._upload_diagnostic(
+                        self._wid, config, last_status, is_generic)
+
+                # 상세는 로그에만 남김
                 self._write_log(f"  최종 결과: {last_status}")
                 self.done.emit(self._row, self._wid, last_status)
 
@@ -2113,6 +2211,28 @@ class SettingsTab(QWidget):
         else:
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.information(self, "로그", "아직 로그 파일이 없습니다.")
+
+    def _on_send_log(self):
+        """오류 로그를 서버에 전송한다."""
+        from PyQt6.QtWidgets import QMessageBox
+        from core.logger import upload_error, get_log_path
+
+        log_path = get_log_path()
+        if not os.path.exists(log_path):
+            QMessageBox.information(self, "로그", "아직 로그 파일이 없습니다.")
+            return
+
+        try:
+            upload_error("USER_REPORT", "사용자가 오류 로그를 전송했습니다")
+            QMessageBox.information(
+                self, "전송 완료",
+                "오류 로그가 개발팀에 전송되었습니다.\n빠르게 확인하겠습니다."
+            )
+        except Exception as e:
+            QMessageBox.warning(
+                self, "전송 실패",
+                f"로그 전송에 실패했습니다.\n오류 로그 열기로 직접 확인해주세요."
+            )
 
     def _on_remote_support(self):
         import os

@@ -106,6 +106,7 @@ def download_and_apply(download_url: str, progress_callback=None,
 
         total = int(resp.headers.get("content-length", 0))
         downloaded = 0
+        last_pct = -1
 
         with open(installer_path, "wb") as f:
             for chunk in resp.iter_content(chunk_size=65536):
@@ -113,7 +114,9 @@ def download_and_apply(download_url: str, progress_callback=None,
                 downloaded += len(chunk)
                 if total > 0:
                     pct = int(downloaded / total * 100)
-                    _progress(f"다운로드 중... {pct}%")
+                    if pct >= last_pct + 10 or pct == 100:
+                        _progress(f"다운로드 중... {pct}%")
+                        last_pct = pct
 
         _progress("다운로드 완료, 앱 종료 후 설치를 시작합니다...")
 
