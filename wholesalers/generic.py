@@ -27,7 +27,7 @@ class GenericWholesaler(WholesalerBase):
 
     def _load_selectors(self) -> dict:
         from core.selector_store import load_selectors
-        return load_selectors(self._wid)
+        return load_selectors(self._wid, url=self.url)
 
     def _save_selectors(self, selectors: dict):
         from core.selector_store import save_selectors

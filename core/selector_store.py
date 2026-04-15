@@ -31,12 +31,16 @@ def _extract_domain(wid: str, selectors: dict = None) -> str:
     return wid
 
 
-def load_selectors(wid: str) -> dict:
+def load_selectors(wid: str, url: str = "") -> dict:
     """도매상 셀렉터를 불러온다.
 
     조회 순서:
       1. 로컬 캐시 (config/selectors/{wid}.json)
-      2. 클라우드에서 다운로드 → 로컬에 저장
+      2. 클라우드에서 다운로드 (wid → 도메인 → URL 도메인 순 시도)
+
+    Args:
+        wid: 도매상 ID
+        url: 도매상 URL (클라우드 조회 시 도메인 추출용)
 
     Returns:
         셀렉터 dict. 없으면 빈 dict.
@@ -47,11 +51,20 @@ def load_selectors(wid: str) -> dict:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
 
-    # 2. 클라우드에서 다운로드
-    domain = _extract_domain(wid)
+    # 2. 클라우드에서 다운로드 — wid와 URL 도메인 둘 다 시도
     try:
         from core.cloud import fetch_selectors
-        cloud_sel = fetch_selectors(domain)
+
+        # wid로 먼저 시도
+        cloud_sel = fetch_selectors(wid)
+
+        # 못 찾으면 URL 도메인으로 시도
+        if not cloud_sel and url:
+            from urllib.parse import urlparse
+            domain = urlparse(url).netloc
+            if domain and domain != wid:
+                cloud_sel = fetch_selectors(domain)
+
         if cloud_sel:
             save_selectors(wid, cloud_sel, upload=False)
             return cloud_sel

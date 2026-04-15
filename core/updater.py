@@ -130,8 +130,12 @@ def download_and_apply(download_url: str, progress_callback=None,
             f.write("  goto wait_loop\r\n")
             f.write(")\r\n")
             # VERYSILENT: UI 없음, SUPPRESSMSGBOXES: 에러 팝업 억제
-            f.write(f'start "" "{installer_path}" '
+            f.write(f'start /wait "" "{installer_path}" '
                     f"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART\r\n")
+            # 설치 완료 후 앱 재시작
+            app_dir = os.path.dirname(sys.executable)
+            app_exe = os.path.join(app_dir, "PharmAuto.exe")
+            f.write(f'if exist "{app_exe}" start "" "{app_exe}"\r\n')
 
         # 헬퍼 실행 (백그라운드, 콘솔 숨김)
         subprocess.Popen(

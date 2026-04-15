@@ -847,8 +847,8 @@ class SettingsTab(QWidget):
                     self.done.emit(self._row, self._wid, "접속 불가")
                     return
 
-                # 2단계: 자가 치유 루프 (최대 4회 재분석→재시도)
-                MAX_ATTEMPTS = 4
+                # 2단계: 자가 치유 루프 (최대 2회 재분석→재시도)
+                MAX_ATTEMPTS = 2
                 last_status = "연동 오류"
 
                 try:
@@ -919,6 +919,10 @@ class SettingsTab(QWidget):
 
                         # 전용 클래스는 자동 재분석 불가 → 반복 중단
                         if not is_generic:
+                            break
+
+                        # 로그인 실패는 재분석해도 안 됨 → 중단
+                        if stage == "login":
                             break
 
                 except Exception as e:
