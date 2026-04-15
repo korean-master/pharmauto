@@ -1,7 +1,8 @@
-"""Claude API를 이용한 도매상 CSS 셀렉터 자동 분석 모듈.
+"""도매상 CSS 셀렉터 자동 분석 모듈.
 
-도매상 사이트의 HTML 뼈대를 Claude에게 전송하여
+Supabase Edge Function을 통해 Claude API를 호출하여
 검색창/검색버튼/장바구니버튼/수량입력창의 CSS 셀렉터를 자동으로 찾아낸다.
+API 키는 서버에만 존재하며 앱에 포함되지 않는다.
 
 사용법:
     from core.ai_analyzer import analyze_selectors
@@ -16,8 +17,18 @@ import re
 SETTINGS_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "settings.json")
 
 
+def _load_cloud_config() -> tuple[str, str]:
+    """settings.json에서 Supabase 설정을 읽는다."""
+    try:
+        with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+            s = json.load(f)
+        return s.get("supabase_url", ""), s.get("supabase_key", "")
+    except Exception:
+        return "", ""
+
+
 def _load_api_key() -> str:
-    """settings.json에서 Claude API 키를 읽는다."""
+    """settings.json에서 Claude API 키를 읽는다 (로컬 폴백용)."""
     try:
         with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
             s = json.load(f)
@@ -27,7 +38,10 @@ def _load_api_key() -> str:
 
 
 def is_available() -> bool:
-    """Claude API 키가 설정되어 있는지 확인."""
+    """AI 분석이 가능한지 확인 (Supabase 또는 로컬 API 키)."""
+    url, key = _load_cloud_config()
+    if url and key:
+        return True
     return bool(_load_api_key())
 
 
@@ -49,11 +63,6 @@ async def analyze_selectors(page, site_url: str, wid: str) -> dict | None:
             "result_rows": "table tbody tr",
         }
     """
-    api_key = _load_api_key()
-    if not api_key:
-        print(f"[AI 분석] Claude API 키 없음 — settings.json에 claude_api_key 추가 필요")
-        return None
-
     # 1. DOM 뼈대 추출
     from core.dom_extractor import extract_form_skeleton
     print(f"[AI 분석] {wid} DOM 추출 중...")
@@ -63,10 +72,16 @@ async def analyze_selectors(page, site_url: str, wid: str) -> dict | None:
         print(f"[AI 분석] {wid} DOM 추출 실패: {skeleton}")
         return None
 
-    # 2. Claude에게 질의
-    print(f"[AI 분석] {wid} Claude에게 셀렉터 분석 요청 중...")
-    raw_response = await _call_claude_api(api_key, site_url, wid, skeleton)
+    # 2. Claude에게 질의 (Supabase 프록시 우선 → 로컬 API 키 폴백)
+    print(f"[AI 분석] {wid} 셀렉터 분석 요청 중...")
+    raw_response = await _call_via_supabase(site_url, wid, skeleton)
     if not raw_response:
+        api_key = _load_api_key()
+        if api_key:
+            print(f"[AI 분석] {wid} 로컬 API 키로 재시도...")
+            raw_response = await _call_claude_api(api_key, site_url, wid, skeleton)
+    if not raw_response:
+        print(f"[AI 분석] {wid} AI 분석 불가")
         return None
 
     # 3. JSON 파싱
@@ -83,6 +98,47 @@ async def analyze_selectors(page, site_url: str, wid: str) -> dict | None:
 
     print(f"[AI 분석] {wid} 분석 성공: {list(selectors.keys())}")
     return selectors
+
+
+async def _call_via_supabase(site_url: str, wid: str, skeleton: str) -> str | None:
+    """Supabase Edge Function을 통해 Claude API를 호출한다."""
+    url, key = _load_cloud_config()
+    if not url or not key:
+        return None
+
+    endpoint = f"{url}/functions/v1/analyze-selectors"
+    payload = {
+        "site_url": site_url,
+        "wid": wid,
+        "skeleton": skeleton,
+    }
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            resp = await client.post(endpoint, json=payload, headers=headers)
+            if resp.status_code != 200:
+                print(f"[AI 분석] Supabase 프록시 오류 {resp.status_code}")
+                return None
+            data = resp.json()
+            return data.get("result", "")
+    except ImportError:
+        try:
+            import requests
+            resp = requests.post(endpoint, json=payload, headers=headers, timeout=45)
+            if resp.status_code != 200:
+                return None
+            return resp.json().get("result", "")
+        except Exception as e:
+            print(f"[AI 분석] Supabase 프록시 호출 실패: {e}")
+            return None
+    except Exception as e:
+        print(f"[AI 분석] Supabase 프록시 호출 실패: {e}")
+        return None
 
 
 async def _call_claude_api(api_key: str, site_url: str, wid: str, skeleton: str) -> str | None:

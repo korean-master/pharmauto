@@ -303,6 +303,10 @@ class WholesalerBase(ABC):
                 if result.get("unit_options"):
                     _cloud_upload_units(code, result["unit_options"])
 
+                # 도매상 차단 방지: 품목 간 딜레이
+                if idx < total:
+                    await self._page.wait_for_timeout(2000)
+
             # 장바구니 최종 스크린샷
             await self._screenshot(f"{prefix}_cart_final.png")
 

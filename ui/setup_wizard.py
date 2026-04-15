@@ -261,6 +261,7 @@ class SetupWizard(QDialog):
             "읽기 전용으로 DB를 탐색합니다. 기존 프로그램에 영향을 주지 않습니다."
         )
         safety.setWordWrap(True)
+        safety.setMinimumHeight(44)
         safety.setStyleSheet(
             "font-size: 12px; color: #22C55E; font-weight: 600; "
             "font-family: 'Malgun Gothic'; padding: 10px 14px; "
@@ -301,9 +302,10 @@ class SetupWizard(QDialog):
         # 프로그레스 바 (처음에 숨김)
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 100)
-        self._progress_bar.setFixedHeight(8)
+        self._progress_bar.setFixedHeight(20)
         self._progress_bar.setStyleSheet(
-            "QProgressBar { border: none; background: #F2F3F5; border-radius: 4px; }"
+            "QProgressBar { border: none; background: #F2F3F5; border-radius: 4px; "
+            "font-size: 11px; color: #4B6BFB; text-align: center; }"
             "QProgressBar::chunk { background: #4B6BFB; border-radius: 4px; }"
         )
         self._progress_bar.setVisible(False)
