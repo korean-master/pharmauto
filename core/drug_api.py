@@ -20,6 +20,31 @@ _cache: dict | None = None
 API_TIMEOUT = 10
 API_RETRIES = 3
 
+# ── 내장 API 키 (난독화) ──
+_K = None
+
+
+def _get_builtin_key() -> str:
+    """난독화된 내장 API 키를 복원한다. 호출 시에만 조립."""
+    global _K
+    if _K:
+        return _K
+    import base64
+    _p = [
+        "3!Lb`2QLS0G4_37%J@3<ERhN)I",
+        "XR-)jGo^fL4%n#8mGQ-RKIy3^Vg",
+        "{cNnGB?Dp_g>)s#CU)2<7)x(XLb",
+    ]
+    _q = [
+        "YW|ClWgIsNQ^!S8{?84NAM<MxT",
+        "?&xAy{zVYBITe5d&J)mX4^p&#Nw",
+        "SZcxC3IOmA3hu<&0(=E`q@jc+G;",
+    ]
+    _d = base64.b85decode("".join(_p).encode())
+    _x = base64.b85decode("".join(_q).encode())
+    _K = "".join(chr(a ^ b) for a, b in zip(_d, _x))
+    return _K
+
 
 def _load_settings():
     from core.crypto import load_settings_secure
@@ -243,22 +268,44 @@ def lookup_drug(insurance_code: str) -> dict | None:
     return _fetch_from_api(insurance_code)
 
 
+# API 키 없을 때 세션 내 반복 호출 방지
+_api_disabled = False
+
+
 def _fetch_from_api(insurance_code: str, save_to_disk: bool = True) -> dict | None:
     """API에서 약품 정보를 조회하고 캐시에 저장한다."""
+    global _api_disabled
+    if _api_disabled:
+        return None
+
     import xml.etree.ElementTree as ET
 
     settings = _load_settings()
+    api_key = settings.get("api_key", "") or _get_builtin_key()
+    if not api_key:
+        _api_disabled = True
+        print("[API] API 키 없음 - API 조회 건너뜀")
+        return None
+
+    api_url = settings.get(
+        "api_url",
+        "https://apis.data.go.kr/B551182/dgamtCrtrInfoService1.2/getDgamtList",
+    )
     params = {
-        "serviceKey": settings["api_key"],
+        "serviceKey": api_key,
         "mdsCd": insurance_code,
         "numOfRows": 1,
     }
 
     for attempt in range(1, API_RETRIES + 1):
         try:
-            resp = requests.get(
-                settings["api_url"], params=params, timeout=API_TIMEOUT
-            )
+            resp = requests.get(api_url, params=params, timeout=API_TIMEOUT)
+            # 401/403은 키 문제 — 재시도 무의미, 세션 내 전체 차단
+            if resp.status_code in (401, 403):
+                _api_disabled = True
+                print(f"[API] 인증 실패({resp.status_code}) - 이후 API 조회 중단")
+                return None
+
             resp.raise_for_status()
 
             root = ET.fromstring(resp.text)

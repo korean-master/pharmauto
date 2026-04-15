@@ -209,163 +209,16 @@ def _get_wholesaler_classes() -> list[tuple[str, type, dict]]:
     return result
 
 
-def _search_samwon_history(drug_name: str, lot_number: str = "",
-                          config: dict = None,
-                          progress_callback=None) -> list[dict]:
-    """삼원약품 매출원장에서 입고이력을 검색한다."""
-    import asyncio
-
-    async def _search():
-        results = []
-        from playwright.async_api import async_playwright
-        import sys
-
-        if progress_callback:
-            progress_callback(f"삼원약품 입고이력 검색: {drug_name}")
-
-        pw_inst = await async_playwright().start()
-
-        if "PLAYWRIGHT_BROWSERS_PATH" not in os.environ:
-            bundle_dir = os.path.dirname(sys.executable)
-            for _bdir in [
-                os.path.join(bundle_dir, "playwright_browsers"),
-                os.path.join(bundle_dir, "_internal", "playwright_browsers"),
-            ]:
-                if os.path.exists(_bdir):
-                    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _bdir
-                    break
-
-        browser = await pw_inst.chromium.launch(headless=True)
-        page = await browser.new_page()
-        page.on("dialog", lambda d: asyncio.ensure_future(d.accept()))
-
-        try:
-            # 로그인
-            await page.goto("https://www.pharmbox.co.kr/",
-                            wait_until="domcontentloaded", timeout=15000)
-            await page.wait_for_timeout(2000)
-            await page.fill("#P_H_USER_ID", config.get("id", ""))
-            await page.fill("#P_H_PWD", config.get("pw", ""))
-            await page.keyboard.press("Enter")
-            await page.wait_for_timeout(4000)
-
-            # 매출원장 페이지
-            await page.goto(
-                "https://www.pharmbox.co.kr/mypharm/sales_ledger.jsp",
-                wait_until="domcontentloaded", timeout=15000,
-            )
-            await page.wait_for_timeout(2000)
-
-            # 기간 5년으로 설정
-            btn_5y = page.locator('button:has-text("5년")')
-            if await btn_5y.count() > 0:
-                await btn_5y.click()
-                await page.wait_for_timeout(500)
-
-            # 약품명 검색
-            await page.fill("#P_SRH_SALES_KEY", drug_name)
-
-            # 조회 버튼
-            lookup_btn = page.locator("button.lookup-btn").first
-            await lookup_btn.click()
-            await page.wait_for_timeout(4000)
-
-            # 테이블 파싱
-            # 헤더: 주문일[0], 보험코드[1], 상품명[2], 입고/출고[3],
-            #       단가[4], 매입액[5], 매출액[6], 잔잔액[7], 제조번호[8], 유효기한[9]
-            rows = page.locator("table").nth(1).locator("tbody tr")
-            count = await rows.count()
-
-            if progress_callback:
-                progress_callback(f"삼원약품 검색 결과: {count}건")
-
-            import re
-            search_keywords = [k.strip() for k in drug_name.split() if k.strip()]
-
-            for i in range(min(count, 50)):
-                try:
-                    row = rows.nth(i)
-                    cells = row.locator("td")
-                    cell_count = await cells.count()
-                    if cell_count < 8:
-                        continue
-
-                    order_date = (await cells.nth(0).inner_text()).strip()
-                    drug = (await cells.nth(2).inner_text()).strip()
-                    inout = (await cells.nth(3).inner_text()).strip()
-                    lot = (await cells.nth(8).inner_text()).strip() if cell_count > 8 else ""
-                    expiry = (await cells.nth(9).inner_text()).strip() if cell_count > 9 else ""
-
-                    if (not drug or "없습니다" in drug or
-                            "소계" in drug or "잔액" in drug or
-                            drug.startswith("<") or drug.startswith("[")):
-                        continue
-
-                    # 키워드 필터링
-                    drug_lower = drug.lower()
-                    if not all(kw.lower() in drug_lower for kw in search_keywords):
-                        continue
-
-                    # 로트번호 매칭 확인
-                    matched = False
-                    if lot_number and lot:
-                        matched = lot_number.lower() in lot.lower()
-
-                    nums = re.sub(r'[^\d]', '', inout)
-                    qty = int(nums) if nums else 0
-
-                    result = {
-                        "drug_name": drug,
-                        "order_date": order_date,
-                        "qty": qty,
-                        "lot_number": lot,
-                        "expiry": expiry,
-                        "wholesaler_id": "삼원약품",
-                        "wholesaler_name": "삼원약품",
-                        "source": "삼원약품",
-                        "matched": matched,
-                    }
-                    results.append(result)
-                except Exception:
-                    continue
-
-        except Exception as e:
-            if progress_callback:
-                progress_callback(f"삼원약품 검색 오류: {e}")
-        finally:
-            await browser.close()
-            await pw_inst.stop()
-
-        return results
-
-    return asyncio.run(_search())
-
-
 def search_wholesaler_history(drug_name: str, lot_number: str = "",
                               progress_callback=None) -> list[dict]:
     """모든 등록 도매상 사이트에서 입고이력을 검색한다.
 
-    전용 클래스(백제/지오영)에서 실패하면 GenericWholesaler 자동 탐지로 재시도.
-    삼원약품은 전용 검색 함수 사용.
+    전용 클래스(백제/지오영 등)에서 실패하면 GenericWholesaler 자동 탐지로 재시도.
+    전용 클래스가 없는 도매상은 처음부터 GenericWholesaler로 처리 (자가치유 적용).
     """
     all_results = []
-    samwon_done = False
 
     for wid, cls, config in _get_wholesaler_classes():
-        # 삼원약품은 전용 함수로 처리
-        if wid == "삼원약품" or (config.get("name", "") == "삼원약품"):
-            try:
-                from core.crypto import load_wholesalers_secure
-                sw_config = load_wholesalers_secure().get(wid, config)
-                results = _search_samwon_history(drug_name, lot_number,
-                                                sw_config, progress_callback)
-                all_results.extend(results)
-                samwon_done = True
-            except Exception as e:
-                if progress_callback:
-                    progress_callback(f"삼원약품 검색 실패: {e}")
-                samwon_done = True
-            continue
         try:
             ws = cls(config)
             if progress_callback:

@@ -76,17 +76,18 @@
     "history_url": "/mypharm/sales_ledger.jsp",
     "history_page_name": "매출원장",
     "search": {
-      "keyword": "#P_SRH_KEY",
-      "search_btn": "button:has-text(\"검색\")"
+      "date_from": "#P_SRH_SALES_DATE_F",
+      "keyword": "#P_SRH_SALES_KEY",
+      "search_fn": "callSalesLedgerSList()"
     },
     "table": {
-      "index": 1,
+      "index": 3,
       "columns": {
         "date": 0,
         "drug_name": 2,
         "qty": 3,
-        "lot_number": 8,
-        "expiry": 9
+        "lot_number": 6,
+        "expiry": 7
       },
       "headers": [
         "주문일",
@@ -95,8 +96,6 @@
         "규격 /수량",
         "단가",
         "구입액",
-        "수금액",
-        "총 잔액",
         "제조번호",
         "유효기한"
       ]

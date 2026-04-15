@@ -381,7 +381,7 @@ class GenericWholesaler(WholesalerBase):
         except Exception:
             pass
 
-        self._progress("  전체 메뉴 탐색 실패 — 주문 페이지 찾지 못함")
+        self._progress("  전체 메뉴 탐색 실패 - 주문 페이지 찾지 못함")
         return {}
 
     # ────── 자동 탐지: 결과 테이블 ──────
@@ -1018,7 +1018,7 @@ class GenericWholesaler(WholesalerBase):
                             all_selectors["ai_agent_used"] = True
                             self._progress("AI 시각 에이전트 분석 완료")
                     else:
-                        self._progress("Claude API 키 없음 — AI 에이전트 사용 불가")
+                        self._progress("Claude API 키 없음 - AI 에이전트 사용 불가")
                 except Exception as e:
                     self._progress(f"AI 에이전트 오류: {e}")
 
@@ -1168,7 +1168,7 @@ class GenericWholesaler(WholesalerBase):
                             self._save_selectors(self._selectors)
                             self._progress("Claude AI 분석 완료 → 셀렉터 임시 저장")
                     else:
-                        self._progress("Claude API 키 없음 — settings.json에 claude_api_key 추가 필요")
+                        self._progress("Claude API 키 없음 - settings.json에 claude_api_key 추가 필요")
                 except Exception as e:
                     self._progress(f"Claude AI 분석 오류: {e}")
         else:
@@ -1950,7 +1950,7 @@ class GenericWholesaler(WholesalerBase):
         self._progress(f"{self.name} 이력 페이지 탐지 중...")
         ok = await self.login_async(headless=headless)
         if not ok:
-            self._progress(f"{self.name} 로그인 실패 — 이력 탐지 건너뜀")
+            self._progress(f"{self.name} 로그인 실패 - 이력 탐지 건너뜀")
             return
 
         detected = await self._detect_history_page()
@@ -1965,6 +1965,69 @@ class GenericWholesaler(WholesalerBase):
 
         try:
             await self._close()
+        except Exception:
+            pass
+
+    async def _set_date_range_5years(self, page, search: dict):
+        """이력 검색 기간을 최소 5년 전으로 설정한다.
+
+        1) config에 date_from 셀렉터가 있으면 직접 값 설정
+        2) 기간 버튼(5년/3년/1년 등)이 있으면 가장 긴 것 클릭
+        3) 둘 다 없으면 페이지의 날짜 input을 자동 탐지해서 설정
+        """
+        from datetime import datetime, timedelta
+        five_years_ago = (datetime.now() - timedelta(days=365 * 5)).strftime("%Y.%m.%d")
+
+        # 1) config에 명시된 date_from 셀렉터
+        date_from_sel = search.get("date_from")
+        if date_from_sel:
+            try:
+                await page.evaluate(
+                    f'document.querySelector("{date_from_sel}").value = "{five_years_ago}"'
+                )
+                return
+            except Exception:
+                pass
+
+        # 2) 기간 버튼 — 긴 순서대로 시도
+        period_btn = search.get("period_btn")
+        if period_btn:
+            try:
+                btn = page.locator(period_btn)
+                if await btn.count() > 0:
+                    await btn.first.click(force=True)
+                    await page.wait_for_timeout(500)
+                    return
+            except Exception:
+                pass
+
+        for label in ["5년", "3년", "전체", "1년", "12개월"]:
+            try:
+                btn = page.locator(f'button:has-text("{label}")').first
+                if await btn.count() > 0:
+                    await btn.click(force=True)
+                    await page.wait_for_timeout(500)
+                    return
+            except Exception:
+                continue
+
+        # 3) 날짜 input 자동 탐지 — id/name에 date, from, start 포함
+        try:
+            date_input = await page.evaluate('''() => {
+                const inputs = document.querySelectorAll('input[type="text"], input[type="date"]');
+                for (const inp of inputs) {
+                    const key = (inp.id + inp.name).toLowerCase();
+                    if ((key.includes('date') || key.includes('from') || key.includes('start'))
+                        && !key.includes('to') && !key.includes('end') && !key.includes('_t')) {
+                        return inp.id ? '#' + inp.id : (inp.name ? `input[name="${inp.name}"]` : null);
+                    }
+                }
+                return null;
+            }''')
+            if date_input:
+                await page.evaluate(
+                    f'document.querySelector(\'{date_input}\').value = "{five_years_ago}"'
+                )
         except Exception:
             pass
 
@@ -1994,7 +2057,7 @@ class GenericWholesaler(WholesalerBase):
                 self._progress(f"{self.name} 이력 페이지 자동 탐지 중...")
                 detected = await self._detect_history_page()
                 if not detected or not detected.get("history_url"):
-                    self._progress(f"{self.name} 이력 페이지 없음 — 건너뜀")
+                    self._progress(f"{self.name} 이력 페이지 없음 - 건너뜀")
                     return results
                 # 탐지 성공 → 저장
                 detected["name"] = self.name
@@ -2020,16 +2083,8 @@ class GenericWholesaler(WholesalerBase):
 
             search = cfg.get("search", {})
 
-            # 기간 설정 (5년 버튼 있으면 클릭)
-            period_btn = search.get("period_btn")
-            if period_btn:
-                try:
-                    btn = page.locator(period_btn)
-                    if await btn.count() > 0:
-                        await btn.first.click(force=True)
-                        await page.wait_for_timeout(500)
-                except Exception:
-                    pass
+            # 기간 설정: 항상 최소 5년 전부터 검색
+            await self._set_date_range_5years(page, search)
 
             # 약품명 입력
             keyword_sel = search.get("keyword")
@@ -2049,9 +2104,19 @@ class GenericWholesaler(WholesalerBase):
                     except Exception:
                         pass
 
-            # 검색 버튼 클릭
+            # 검색 실행: JS 함수 직접 호출 또는 버튼 클릭
+            search_fn = search.get("search_fn")
             search_btn = search.get("search_btn")
-            if search_btn:
+            if search_fn:
+                try:
+                    await page.evaluate(search_fn)
+                    await page.wait_for_timeout(4000)
+                except Exception:
+                    if search_btn:
+                        btn = page.locator(search_btn).first
+                        await btn.click(force=True)
+                        await page.wait_for_timeout(4000)
+            elif search_btn:
                 try:
                     btn = page.locator(search_btn).first
                     await btn.click(force=True)
