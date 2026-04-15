@@ -2,7 +2,7 @@
 ; 빌드: "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
 
 #define MyAppName "PharmAuto"
-#define MyAppVersion "1.5.0"
+#define MyAppVersion "1.5.1"
 #define MyAppPublisher "PharmAuto"
 #define MyAppExeName "PharmAuto.exe"
 #define BuildDir "dist_nuitka\main.dist"
@@ -77,11 +77,21 @@ Type: files; Name: "{app}\PharmAuto.exe"
 
 [Code]
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
 begin
-  { 설치 진행 중 파일명 숨기기 — 프로그레스 바만 표시 }
+  { 설치 진행 중 파일명 숨기기 }
   if CurStep = ssInstall then
   begin
     WizardForm.StatusLabel.Visible := False;
     WizardForm.FilenameLabel.Visible := False;
+  end;
+
+  { 설치 완료 후 Windows Defender 예외 등록 (코드 서명 도입 시 제거) }
+  if CurStep = ssPostInstall then
+  begin
+    Exec('powershell.exe',
+      '-NoProfile -Command "Start-Process powershell -Verb RunAs -WindowStyle Hidden -ArgumentList ''-NoProfile -Command Add-MpPreference -ExclusionPath \"' + ExpandConstant('{app}') + '\"''''"',
+      '', SW_HIDE, ewNoWait, ResultCode);
   end;
 end;

@@ -81,14 +81,14 @@ def check_update() -> dict | None:
 
 def download_and_apply(download_url: str, progress_callback=None,
                        expected_hash: str = "") -> bool:
-    """설치파일을 다운로드하고 실행한다.
+    """설치파일을 다운로드하고, 앱 종료 후 설치를 실행한다.
 
     1. PharmAutoSetup.exe 다운로드
-    2. /SILENT 모드로 설치 실행 (기존 파일 덮어쓰기)
-    3. 앱 종료
+    2. 헬퍼 스크립트 생성 (앱 종료 대기 -> 설치 실행)
+    3. 헬퍼 실행 -> 앱 종료 -> 파일 잠금 해제 후 설치 진행
 
     Returns:
-        True if download successful (설치는 별도 프로세스)
+        True if download successful (설치는 앱 종료 후 별도 프로세스)
     """
     def _progress(msg):
         print(f"[업데이트] {msg}")
@@ -115,12 +115,29 @@ def download_and_apply(download_url: str, progress_callback=None,
                     pct = int(downloaded / total * 100)
                     _progress(f"다운로드 중... {pct}%")
 
-        _progress("다운로드 완료, 설치 시작...")
+        _progress("다운로드 완료, 앱 종료 후 설치를 시작합니다...")
 
-        # 설치 실행 (/SILENT = 자동 설치, /CLOSEAPPLICATIONS = 실행 중인 앱 닫기)
+        # 헬퍼 배치 스크립트: 앱 종료 대기 -> 설치 실행
+        helper_path = os.path.join(tmp_dir, "_update.bat")
+        with open(helper_path, "w", encoding="mbcs") as f:
+            f.write("@echo off\r\n")
+            # PharmAuto.exe가 완전히 종료될 때까지 대기 (최대 30초)
+            f.write(":wait_loop\r\n")
+            f.write('tasklist /FI "IMAGENAME eq PharmAuto.exe" 2>nul '
+                    '| find /I "PharmAuto.exe" >nul\r\n')
+            f.write("if %ERRORLEVEL%==0 (\r\n")
+            f.write("  timeout /t 2 /nobreak >nul\r\n")
+            f.write("  goto wait_loop\r\n")
+            f.write(")\r\n")
+            # VERYSILENT: UI 없음, SUPPRESSMSGBOXES: 에러 팝업 억제
+            f.write(f'start "" "{installer_path}" '
+                    f"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART\r\n")
+
+        # 헬퍼 실행 (백그라운드, 콘솔 숨김)
         subprocess.Popen(
-            [installer_path, "/SILENT", "/CLOSEAPPLICATIONS"],
+            ["cmd.exe", "/c", helper_path],
             cwd=tmp_dir,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
 
         return True

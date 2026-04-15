@@ -126,8 +126,8 @@ class StartupUpdateDialog(QDialog):
             QTimer.singleShot(2000, self.accept)
 
     def _exit_for_install(self):
-        """설치 프로그램이 파일을 교체할 수 있도록 앱을 종료한다."""
-        sys.exit(0)
+        """설치 프로그램이 파일을 교체할 수 있도록 앱을 완전히 종료한다."""
+        os._exit(0)
 
     @property
     def update_success(self) -> bool:
