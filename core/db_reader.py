@@ -18,11 +18,19 @@ def _load_settings():
 
 
 _conn_cache = None
+_conn_failed = False  # 연결 실패 시 세션 내 재시도 방지
 
 
 def get_connection():
-    """DB 연결을 반환한다. 연결이 살아있으면 재사용한다."""
-    global _conn_cache
+    """DB 연결을 반환한다. 연결이 살아있으면 재사용한다.
+
+    한번 실패하면 세션 내에서 재시도하지 않는다 (타임아웃으로 앱 프리징 방지).
+    """
+    global _conn_cache, _conn_failed
+
+    if _conn_failed:
+        return None
+
     try:
         if _conn_cache and not _conn_cache.closed:
             _conn_cache.execute("SELECT 1")
@@ -43,8 +51,13 @@ def get_connection():
         f"Trusted_Connection=yes;"
     )
     print(f"[DB] 연결: {server}/{database}")
-    _conn_cache = pyodbc.connect(conn_str, timeout=5)
-    return _conn_cache
+    try:
+        _conn_cache = pyodbc.connect(conn_str, timeout=5)
+        return _conn_cache
+    except Exception as e:
+        _conn_failed = True
+        print(f"[DB] 연결 실패 - 이후 DB 조회 건너뜀: {e}")
+        return None
 
 
 def _fetch_drug_names(cursor, codes: list[str]) -> dict[str, str]:
@@ -91,6 +104,8 @@ def fetch_prescriptions(time_range: str = "all",
           f"커스텀: {start_time}~{end_time}")
 
     conn = get_connection()
+    if conn is None:
+        return []
     cursor = conn.cursor()
 
     # 시간 범위 결정
@@ -151,6 +166,8 @@ def fetch_all_prescribed_drugs(months: int = 3) -> list[dict]:
     """최근 N개월 내 출고 이력이 있는 약품의 보험코드와 약품명을 조회한다."""
     print(f"[DB] 처방 약품 목록 조회 중 (최근 {months}개월)...")
     conn = get_connection()
+    if conn is None:
+        return []
     cursor = conn.cursor()
 
     if months > 0:
@@ -212,6 +229,8 @@ def fetch_last_month_usage():
     yyyymm_prefix = yyyymm + "%"
 
     conn = get_connection()
+    if conn is None:
+        return {}
     cursor = conn.cursor()
     cursor.execute("""
         SELECT SD_ISCODE, SUM(SD_DAYAMT2) as total_out
@@ -250,6 +269,8 @@ def fetch_drug_usage(insurance_code: str) -> dict:
     last_month_prefix = f"{lm_year}{lm_month:02d}"
 
     conn = get_connection()
+    if conn is None:
+        return {"this_week": 0, "this_month": 0, "last_month": 0}
     cursor = conn.cursor()
 
     result = {"this_week": 0, "this_month": 0, "last_month": 0}

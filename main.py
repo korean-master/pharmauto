@@ -475,6 +475,34 @@ def _bring_existing_window():
         _app.quit()
 
 
+def _db_connection_broken() -> bool:
+    """설정된 DB에 연결할 수 있는지 빠르게 확인한다."""
+    try:
+        import json
+        settings_path = os.path.join(ROOT_DIR, "config", "settings.json")
+        if not os.path.exists(settings_path):
+            return False
+        with open(settings_path, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+        if not settings.get("setup_complete"):
+            return False
+        db = settings.get("db", {})
+        if not db.get("server"):
+            return True
+        import pyodbc
+        conn_str = (
+            f"DRIVER={{{db.get('driver', 'SQL Server')}}};"
+            f"SERVER={db['server']};"
+            f"DATABASE={db.get('database', 'eP_PHARM')};"
+            f"Trusted_Connection=yes;"
+        )
+        conn = pyodbc.connect(conn_str, timeout=3)
+        conn.close()
+        return False
+    except Exception:
+        return True
+
+
 def main():
     # DPI 스케일링 대응
     os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
@@ -514,9 +542,9 @@ def main():
         if not dlg.activated:
             sys.exit(0)
 
-    # 첫 실행이면 설치 마법사
+    # 첫 실행이거나 DB 연결 불가 시 설치 마법사
     from ui.setup_wizard import needs_setup
-    if needs_setup():
+    if needs_setup() or _db_connection_broken():
         from ui.setup_wizard import SetupWizard
         wizard = SetupWizard()
         wizard.exec()
