@@ -37,6 +37,14 @@ LOG_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 LOG_PATH = os.path.join(LOG_DIR, "setup_log.txt")
 
 
+def _get_version() -> str:
+    try:
+        from core.version import VERSION
+        return VERSION
+    except Exception:
+        return "unknown"
+
+
 def _log(msg: str):
     """설치 마법사 로그를 파일에 기록한다."""
     from datetime import datetime
@@ -404,15 +412,96 @@ class SetupWizard(QDialog):
             for radio in self._prog_radios.values():
                 radio.setEnabled(True)
 
-            # 로그 파일 위치 안내
-            if os.path.exists(LOG_PATH):
-                QMessageBox.information(
-                    self, "설정 실패",
-                    f"{result['error']}\n\n"
-                    f"로그 파일이 저장되었습니다.\n"
-                    f"이 파일을 개발자에게 보내주시면 원인을 파악할 수 있습니다.\n\n"
-                    f"위치: {os.path.abspath(LOG_PATH)}"
+            # 1) 바탕화면에 오류 로그 저장 (원격 지원용)
+            desktop_log = self._save_log_to_desktop(result["error"])
+
+            # 2) 서버에 자동 전송
+            self._upload_setup_log(result["error"])
+
+            # 3) 안내 + 로그 보내기 버튼
+            log_msg = f"{result['error']}\n\n"
+            if desktop_log:
+                log_msg += f"오류 로그가 바탕화면에 저장되었습니다.\n({os.path.basename(desktop_log)})"
+            else:
+                log_msg += "오류 로그 전송을 시도합니다."
+            QMessageBox.warning(self, "설정 실패", log_msg)
+
+            if not hasattr(self, "_send_log_btn"):
+                self._send_log_btn = QPushButton("오류 로그 다시 보내기")
+                self._send_log_btn.setStyleSheet(
+                    "QPushButton { font-size: 12px; padding: 8px 20px; "
+                    "background: #EF4444; color: white; border: none; "
+                    "border-radius: 6px; font-weight: 600; "
+                    "font-family: 'Malgun Gothic'; }"
+                    "QPushButton:hover { background: #DC2626; }"
                 )
+                self._send_log_btn.clicked.connect(
+                    lambda: self._upload_setup_log(result["error"], manual=True))
+                self.layout().addWidget(self._send_log_btn)
+
+    def _save_log_to_desktop(self, error_msg: str) -> str:
+        """설치 오류 로그를 바탕화면에 저장한다. 경로를 반환."""
+        try:
+            desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+            dest = os.path.join(desktop, "PharmAuto_설치오류.txt")
+
+            with open(dest, "w", encoding="utf-8") as f:
+                from datetime import datetime
+                f.write(f"PharmAuto 설치 오류 로그\n")
+                f.write(f"시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"버전: {_get_version()}\n")
+                f.write(f"프로그램: {self._selected_program()}\n")
+                f.write(f"오류: {error_msg}\n")
+                f.write(f"{'=' * 50}\n\n")
+
+                # 설치 마법사 상세 로그 복사
+                if os.path.exists(LOG_PATH):
+                    with open(LOG_PATH, "r", encoding="utf-8") as log_f:
+                        f.write(log_f.read())
+
+            return dest
+        except Exception:
+            return ""
+
+    def _upload_setup_log(self, error_msg: str, manual: bool = False):
+        """설치 실패 로그를 Supabase에 업로드한다."""
+        import threading
+
+        def _upload():
+            try:
+                from core.cloud import _api_url, _headers
+                import requests
+
+                log_tail = ""
+                if os.path.exists(LOG_PATH):
+                    with open(LOG_PATH, "r", encoding="utf-8") as f:
+                        log_tail = f.read()[-5000:]
+
+                requests.post(
+                    _api_url("error_logs"),
+                    headers=_headers(),
+                    json={
+                        "pharmacy_code": "SETUP_FAIL",
+                        "version": _get_version(),
+                        "level": "SETUP_FAIL",
+                        "message": error_msg[:500],
+                        "context": {"program": self._selected_program()},
+                        "log_tail": log_tail,
+                    },
+                    timeout=5,
+                )
+                if manual:
+                    from PyQt6.QtCore import QMetaObject, Q_ARG
+                    # UI 스레드에서 메시지 표시
+                    QMetaObject.invokeMethod(
+                        self._status, "setText",
+                        Qt.ConnectionType.QueuedConnection,
+                        Q_ARG(str, "오류 정보가 전송되었습니다"),
+                    )
+            except Exception:
+                pass
+
+        threading.Thread(target=_upload, daemon=True).start()
 
     def _save_settings(self, result: dict):
         settings = {}

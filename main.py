@@ -542,6 +542,10 @@ def main():
         if not dlg.activated:
             sys.exit(0)
 
+    # 메인 윈도우 뜨기 전에 업데이트 체크 & 자동 적용
+    # (설치 마법사보다 먼저 — DB 연결 실패 수정 배포 후 업데이트로 해결 가능)
+    _check_and_apply_update(app)
+
     # 첫 실행이거나 DB 연결 불가 시 설치 마법사
     from ui.setup_wizard import needs_setup
     if needs_setup() or _db_connection_broken():
@@ -554,9 +558,6 @@ def main():
     # 기존 평문 비밀번호/API키 암호화 마이그레이션
     from core.crypto import migrate_plaintext
     migrate_plaintext()
-
-    # 메인 윈도우 뜨기 전에 업데이트 체크 & 자동 적용
-    _check_and_apply_update(app)
 
     from core.drug_api import preload_cache
     preload_cache()
