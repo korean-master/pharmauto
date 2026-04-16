@@ -946,7 +946,9 @@ class SettingsTab(QWidget):
                         ws_class = GenericWholesaler
                         config["_wid"] = self._wid
 
-                    self._write_log(f"  클래스: {'Generic' if is_generic else ws_class.__name__}")
+                    self._write_log(
+                        f"  클래스: {'Generic' if is_generic else ws_class.__name__}"
+                        f" (wid={self._wid}, url={config.get('url', '')[:60]})")
 
                     for attempt in range(MAX_ATTEMPTS):
                         self._write_log(f"  시도 {attempt + 1}/{MAX_ATTEMPTS}")

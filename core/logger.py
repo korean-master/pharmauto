@@ -72,13 +72,13 @@ def upload_error(level: str, message: str, context: dict | None = None):
             import requests
             from core.version import VERSION
 
-            # 로그 파일 마지막 30줄
+            # 로그 파일 마지막 80줄
             log_tail = ""
             try:
                 if os.path.exists(LOG_PATH):
                     with open(LOG_PATH, "r", encoding="utf-8") as f:
                         lines = f.readlines()
-                    log_tail = "".join(lines[-30:])
+                    log_tail = "".join(lines[-80:])
             except Exception:
                 pass
 
