@@ -314,8 +314,8 @@ _WHOLESALER_CLASSES = {
 
 # URL 도메인 → 전용 클래스 매핑 (wid가 다를 때 폴백)
 _URL_DOMAIN_MAP = {
-    "geoweb.kr": "geo",
-    "ibjp.kr": "baekje",
+    "geoweb": "geo",
+    "ibjp": "baekje",
 }
 
 
