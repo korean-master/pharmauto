@@ -1045,10 +1045,12 @@ class SettingsTab(QWidget):
 
     def _on_ws_test_done(self, row: int, wid: str, status_text: str):
         """테스트 결과를 표시하고 wholesalers.json에 저장한다."""
-        # 이력 검색 설정 확인 — 전용 클래스(geo/baekje) 아닌 도매상만
+        # 이력 검색 설정 확인 — 전용 클래스가 아닌 도매상만
         history_ok = True
-        from core.order_engine import _WHOLESALER_CLASSES
-        if wid not in _WHOLESALER_CLASSES and status_text == "정상":
+        from core.order_engine import _get_wholesaler_class
+        ws_data = _load_json("wholesalers.json").get(wid, {})
+        is_dedicated = _get_wholesaler_class(wid, url=ws_data.get("url", "")) is not None
+        if not is_dedicated and status_text == "정상":
             try:
                 from core.history_config import get_config
                 h_cfg = get_config(wid)
