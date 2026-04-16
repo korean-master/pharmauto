@@ -312,11 +312,27 @@ _WHOLESALER_CLASSES = {
     "baekje": ("wholesalers.baekje", "BaekjeWholesaler"),
 }
 
+# URL 도메인 → 전용 클래스 매핑 (wid가 다를 때 폴백)
+_URL_DOMAIN_MAP = {
+    "geoweb.kr": "geo",
+    "ibjp.kr": "baekje",
+}
 
-def _get_wholesaler_class(wid: str):
-    """도매상 ID에 해당하는 클래스를 반환한다. 없으면 None."""
+
+def _get_wholesaler_class(wid: str, url: str = ""):
+    """도매상 ID에 해당하는 클래스를 반환한다. 없으면 None.
+
+    wid 직접 매칭 실패 시 URL 도메인으로 전용 클래스를 찾는다.
+    사용자가 도매상 이름을 한글로 등록해도 전용 클래스가 정상 매칭된다.
+    """
     import importlib
     entry = _WHOLESALER_CLASSES.get(wid)
+    if not entry and url:
+        url_lower = url.lower()
+        for domain, mapped_wid in _URL_DOMAIN_MAP.items():
+            if domain in url_lower:
+                entry = _WHOLESALER_CLASSES.get(mapped_wid)
+                break
     if entry:
         module = importlib.import_module(entry[0])
         return getattr(module, entry[1])
@@ -340,7 +356,7 @@ def _execute_wholesaler_order(wid: str, ws_config: dict, items: list[dict],
     """
     import asyncio
 
-    ws_class = _get_wholesaler_class(wid)
+    ws_class = _get_wholesaler_class(wid, url=ws_config.get("url", ""))
     if not ws_class:
         # 전용 클래스가 없으면 범용 자동화 클래스 사용
         from wholesalers.generic import GenericWholesaler

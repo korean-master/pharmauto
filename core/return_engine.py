@@ -182,22 +182,14 @@ def _get_wholesaler_classes() -> list[tuple[str, type, dict]]:
     from core.crypto import load_wholesalers_secure
     secure_ws = load_wholesalers_secure()
 
-    class_map = {
-        "geo": ("wholesalers.jioeyoung", "JioeyoungWholesaler"),
-        "baekje": ("wholesalers.baekje", "BaekjeWholesaler"),
-    }
+    from core.order_engine import _get_wholesaler_class
 
     result = []
     for wid in ws_map:
         config = secure_ws.get(wid, {})
-        if wid in class_map:
-            module_name, cls_name = class_map[wid]
-            try:
-                mod = importlib.import_module(module_name)
-                cls = getattr(mod, cls_name)
-                result.append((wid, cls, config))
-            except Exception:
-                continue
+        ws_cls = _get_wholesaler_class(wid, url=config.get("url", ""))
+        if ws_cls:
+            result.append((wid, ws_cls, config))
         else:
             # GenericWholesaler로 처리 (이력 검색 설정이 있는 도매상만)
             try:

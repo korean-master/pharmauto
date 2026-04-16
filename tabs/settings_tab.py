@@ -937,7 +937,8 @@ class SettingsTab(QWidget):
 
                 try:
                     from core.order_engine import _get_wholesaler_class
-                    ws_class = _get_wholesaler_class(self._wid)
+                    ws_class = _get_wholesaler_class(
+                        self._wid, url=config.get("url", ""))
                     is_generic = ws_class is None
 
                     if is_generic:
