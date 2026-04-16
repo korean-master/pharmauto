@@ -434,6 +434,16 @@ class SetupWizard(QDialog):
             settings["pharmacy_name"] = result["pharmacy_name"]
         settings["setup_complete"] = True
 
+        # Supabase 클라우드 기본값 (에러 로그/셀렉터 공유에 필요)
+        settings.setdefault(
+            "supabase_url", "https://bvxcdgnuslxobcaqdtds.supabase.co")
+        settings.setdefault(
+            "supabase_key",
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+            "eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ2eGNkZ251c2x4b2JjYXFkdGRzIiwi"
+            "cm9sZSI6ImFub24iLCJpYXQiOjE3NzU2MDE3MTYsImV4cCI6MjA5MTE3NzcxNn0."
+            "_1KW_PBoHcW2nKyNQlkO-QngtaKKusAqZpi2XxZpHt0")
+
         os.makedirs(CONFIG_DIR, exist_ok=True)
         with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
             json.dump(settings, f, ensure_ascii=False, indent=2)
