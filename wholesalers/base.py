@@ -386,12 +386,23 @@ class WholesalerBase(ABC):
             if not cart_ok:
                 return {"success": False, "stage": "cart", "message": "장바구니 담기 실패"}
 
-            # 3. 장바구니 비우기 시도 (실패해도 OK - 사이트마다 다름)
+            # 3. 장바구니 비우기 — 테스트 약품이 남으면 실주문 위험
             self._progress("연동 테스트: 장바구니 정리 중...")
+            cart_cleared = False
             try:
                 await self._clear_cart()
+                # 비우기 후 카운트 확인
+                remaining = await self._get_cart_count()
+                cart_cleared = remaining <= 0
             except Exception:
-                pass  # 장바구니 비우기는 실패해도 테스트 성공
+                pass
+
+            if not cart_cleared:
+                self._progress("연동 테스트: 완료 (장바구니 수동 확인 필요)")
+                return {
+                    "success": True, "stage": "done",
+                    "message": "연동 정상 (테스트 약품 장바구니 수동 삭제 필요)",
+                }
 
             self._progress("연동 테스트: 완료!")
             return {"success": True, "stage": "done", "message": "연동 정상"}

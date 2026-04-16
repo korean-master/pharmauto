@@ -257,6 +257,60 @@ class BaekjeWholesaler(WholesalerBase):
             pass
         return -1
 
+    # ------ 장바구니 비우기 ------
+
+    async def _clear_cart(self):
+        """백제약품 장바구니를 비운다."""
+        page = self._page
+        if not page:
+            return
+
+        # 주문 페이지로 이동 (장바구니 목록이 여기에 있음)
+        try:
+            await page.goto(
+                "http://www.ibjp.kr/dist/order",
+                wait_until="domcontentloaded",
+                timeout=10000,
+            )
+            await page.wait_for_timeout(2000)
+            await self._close_popup(page)
+
+            # 전체 선택 체크박스
+            select_all = page.locator(
+                'th input[type="checkbox"], '
+                'thead input[type="checkbox"], '
+                '.q-checkbox:first-child'
+            ).first
+            if await select_all.count() > 0:
+                await select_all.click(force=True)
+                await page.wait_for_timeout(500)
+
+            # 삭제 버튼
+            for sel in [
+                'button:has-text("삭제")',
+                'button:has-text("선택삭제")',
+                'button:has-text("전체삭제")',
+                'a:has-text("삭제")',
+            ]:
+                btn = page.locator(sel).first
+                if await btn.count() > 0 and await btn.is_visible():
+                    await btn.click(force=True)
+                    await page.wait_for_timeout(1000)
+
+                    # 확인 팝업
+                    confirm = page.locator(
+                        '.q-dialog button:has-text("확인"), '
+                        '.q-dialog button:has-text("예")'
+                    ).first
+                    if await confirm.count() > 0:
+                        await confirm.click(force=True)
+                        await page.wait_for_timeout(1000)
+                    break
+
+            self._progress("장바구니 비우기 완료")
+        except Exception as e:
+            self._progress(f"장바구니 비우기 실패: {e}")
+
     # ------ 주문확정 ------
 
     async def _confirm_order(self) -> None:
