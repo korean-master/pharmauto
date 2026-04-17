@@ -164,8 +164,9 @@ class WholesalerBase(ABC):
         if not self._page:
             return
         try:
-            # alert/confirm 다이얼로그
-            self._page.on("dialog", lambda d: d.dismiss())
+            # alert/confirm 다이얼로그 — 핸들러 참조 저장 (나중에 교체 가능)
+            self._dismiss_handler = lambda d: d.dismiss()
+            self._page.on("dialog", self._dismiss_handler)
         except Exception:
             pass
         # 일반적인 닫기 버튼 패턴
@@ -418,33 +419,45 @@ class WholesalerBase(ABC):
         if not page:
             return
 
-        # 공통 패턴으로 장바구니 비우기 시도
-        clear_selectors = [
-            'button:has-text("전체삭제")',
-            'button:has-text("비우기")',
-            'button:has-text("전체 삭제")',
-            'button:has-text("장바구니 비우기")',
-            'a:has-text("전체삭제")',
-        ]
-        for sel in clear_selectors:
-            try:
-                btn = await page.query_selector(sel)
-                if btn and await btn.is_visible():
-                    await btn.click()
-                    await page.wait_for_timeout(1000)
-                    # 확인 팝업
-                    for confirm_sel in ['button:has-text("확인")', 'button:has-text("예")']:
-                        try:
-                            confirm = await page.query_selector(confirm_sel)
-                            if confirm and await confirm.is_visible():
-                                await confirm.click()
-                                await page.wait_for_timeout(1000)
-                                break
-                        except Exception:
-                            pass
-                    return
-            except Exception:
-                continue
+        # 삭제 확인 다이얼로그를 accept 해야 하므로 핸들러 교체
+        if hasattr(self, '_dismiss_handler'):
+            page.remove_listener("dialog", self._dismiss_handler)
+        _accept_handler = lambda d: d.accept()
+        page.on("dialog", _accept_handler)
+
+        try:
+            # 공통 패턴으로 장바구니 비우기 시도
+            clear_selectors = [
+                'button:has-text("전체삭제")',
+                'button:has-text("비우기")',
+                'button:has-text("전체 삭제")',
+                'button:has-text("장바구니 비우기")',
+                'a:has-text("전체삭제")',
+            ]
+            for sel in clear_selectors:
+                try:
+                    btn = await page.query_selector(sel)
+                    if btn and await btn.is_visible():
+                        await btn.click()
+                        await page.wait_for_timeout(1000)
+                        # 프레임워크 확인 팝업 (window.confirm이 아닌 경우)
+                        for confirm_sel in ['button:has-text("확인")', 'button:has-text("예")']:
+                            try:
+                                confirm = await page.query_selector(confirm_sel)
+                                if confirm and await confirm.is_visible():
+                                    await confirm.click()
+                                    await page.wait_for_timeout(1000)
+                                    break
+                            except Exception:
+                                pass
+                        return
+                except Exception:
+                    continue
+        finally:
+            # 핸들러 복원
+            page.remove_listener("dialog", _accept_handler)
+            if hasattr(self, '_dismiss_handler'):
+                page.on("dialog", self._dismiss_handler)
 
     # ────── 동기 래퍼 ──────
 

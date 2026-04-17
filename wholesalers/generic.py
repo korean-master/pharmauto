@@ -1212,8 +1212,15 @@ class GenericWholesaler(WholesalerBase):
 
             # 2. 표준 테스트 코드로 장바구니 시도
             self._progress("연동 테스트: 표준 코드로 장바구니 테스트...")
-            for code in TEST_CODES:
+            for i, code in enumerate(TEST_CODES):
                 try:
+                    # 두 번째 코드부터는 페이지 복구 (검색 후 리로드로 꼬일 수 있음)
+                    if i > 0:
+                        try:
+                            await page.goto(order_page_url, wait_until="domcontentloaded")
+                            await page.wait_for_timeout(1500)
+                        except Exception:
+                            pass
                     r = await self._add_item_to_cart(code, 1, 1, 1)
                     if r.get("success"):
                         self._progress(f"연동 테스트: 성공 ({r.get('drug_name', code)})")
@@ -1237,6 +1244,17 @@ class GenericWholesaler(WholesalerBase):
                 valid_rows = []
 
                 for word in search_words:
+                    # 검색 필드가 페이지 리로드로 사라질 수 있으므로 대기
+                    try:
+                        await page.wait_for_selector(search_input, state="visible", timeout=5000)
+                    except Exception:
+                        try:
+                            await page.goto(order_page_url, wait_until="domcontentloaded")
+                            await page.wait_for_timeout(2000)
+                            await page.wait_for_selector(search_input, state="visible", timeout=8000)
+                        except Exception:
+                            self._progress(f"  [{word}] 검색 필드 복구 실패")
+                            continue
                     await page.fill(search_input, "")
                     await page.wait_for_timeout(200)
                     await page.fill(search_input, word)
@@ -1470,6 +1488,9 @@ class GenericWholesaler(WholesalerBase):
                   "quantity": quantity, "box_qty": 0, "pack_size": 0,
                   "drug_name": "", "message": "", "unit_options": []}
 
+        # 검색 전 현재 URL 저장 (페이지 복구용)
+        _order_url = page.url
+
         search = self._selectors.get("search", {})
         table = self._selectors.get("table", {})
         search_input = search.get("search_input")
@@ -1544,6 +1565,18 @@ class GenericWholesaler(WholesalerBase):
 
         for term in search_terms:
             self._progress(f"  [{term}] 검색 시도 중...")
+            # 검색 필드가 페이지 리로드로 사라질 수 있으므로 대기
+            try:
+                await page.wait_for_selector(search_input, state="visible", timeout=5000)
+            except Exception:
+                # 페이지 리로드 후 요소가 사라짐 → 주문 페이지 재접속
+                try:
+                    await page.goto(_order_url, wait_until="domcontentloaded")
+                    await page.wait_for_timeout(2000)
+                    await page.wait_for_selector(search_input, state="visible", timeout=8000)
+                except Exception:
+                    self._progress(f"  [{term}] 검색 필드 복구 실패")
+                    continue
             await page.fill(search_input, '')
             await page.wait_for_timeout(300)
             await page.fill(search_input, term)

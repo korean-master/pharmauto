@@ -248,7 +248,6 @@ def upload_selectors(domain: str, name: str, selectors: dict):
                 "table_sel": selectors.get("table", {}),
                 "confirm_sel": selectors.get("confirm", {}),
                 "auto_detected": selectors.get("auto_detected", False),
-                "confidence": selectors.get("confidence", "provisional"),
                 "updated_at": datetime.utcnow().isoformat(),
             },
             timeout=5,

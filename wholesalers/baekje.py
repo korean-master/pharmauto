@@ -265,15 +265,20 @@ class BaekjeWholesaler(WholesalerBase):
         if not page:
             return
 
-        # 주문 페이지로 이동 (장바구니 목록이 여기에 있음)
+        # 삭제 확인 다이얼로그를 accept 해야 하므로 핸들러 교체
+        if hasattr(self, '_dismiss_handler'):
+            page.remove_listener("dialog", self._dismiss_handler)
+        _accept_handler = lambda d: d.accept()
+        page.on("dialog", _accept_handler)
+
         try:
+            # 주문 페이지로 이동 (장바구니 목록이 여기에 있음)
             await page.goto(
                 "http://www.ibjp.kr/dist/order",
                 wait_until="domcontentloaded",
                 timeout=10000,
             )
             await page.wait_for_timeout(2000)
-            await self._close_popup(page)
 
             # 전체 선택 체크박스
             select_all = page.locator(
@@ -284,8 +289,10 @@ class BaekjeWholesaler(WholesalerBase):
             if await select_all.count() > 0:
                 await select_all.click(force=True)
                 await page.wait_for_timeout(500)
+                self._progress("장바구니 전체 선택 완료")
 
             # 삭제 버튼
+            deleted = False
             for sel in [
                 'button:has-text("삭제")',
                 'button:has-text("선택삭제")',
@@ -295,9 +302,9 @@ class BaekjeWholesaler(WholesalerBase):
                 btn = page.locator(sel).first
                 if await btn.count() > 0 and await btn.is_visible():
                     await btn.click(force=True)
-                    await page.wait_for_timeout(1000)
+                    await page.wait_for_timeout(1500)
 
-                    # 확인 팝업
+                    # Quasar 프레임워크 확인 팝업 (window.confirm이 아닌 경우)
                     confirm = page.locator(
                         '.q-dialog button:has-text("확인"), '
                         '.q-dialog button:has-text("예")'
@@ -305,11 +312,20 @@ class BaekjeWholesaler(WholesalerBase):
                     if await confirm.count() > 0:
                         await confirm.click(force=True)
                         await page.wait_for_timeout(1000)
+                    deleted = True
                     break
 
-            self._progress("장바구니 비우기 완료")
+            if deleted:
+                self._progress("장바구니 비우기 완료")
+            else:
+                self._progress("장바구니 삭제 버튼 못 찾음 (비어있을 수 있음)")
         except Exception as e:
             self._progress(f"장바구니 비우기 실패: {e}")
+        finally:
+            # 핸들러 복원
+            page.remove_listener("dialog", _accept_handler)
+            if hasattr(self, '_dismiss_handler'):
+                page.on("dialog", self._dismiss_handler)
 
     # ------ 주문확정 ------
 
