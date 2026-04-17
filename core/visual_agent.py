@@ -52,10 +52,18 @@ class StepResult:
 class VisualAgent:
     """단계별 시각 피드백으로 도매상 셀렉터를 탐지하는 에이전트."""
 
-    def __init__(self, api_key: str, wid: str):
-        self._api_key = api_key
+    def __init__(self, api_key: str = "", wid: str = ""):
+        self._api_key = api_key  # 로컬 API 키 (없으면 Edge Function 사용)
         self._wid = wid
         self._step_history: list[str] = []  # 이전 단계 요약
+        # Supabase Edge Function 설정 로드
+        self._cloud_url = ""
+        self._cloud_key = ""
+        try:
+            from core.cloud import _load_cloud_config
+            self._cloud_url, self._cloud_key = _load_cloud_config()
+        except Exception:
+            pass
 
     async def run(self, page, url: str, user_id: str, password: str,
                   progress=None) -> dict:
@@ -389,11 +397,93 @@ DOM 뼈대:
 
     # ────── AI 통신 ──────
 
+    def _can_call_ai(self) -> bool:
+        """AI 호출이 가능한지 확인 (Edge Function 또는 로컬 API 키)."""
+        return bool(self._cloud_url and self._cloud_key) or bool(self._api_key)
+
     async def _ask_ai(self, prompt: str, screenshot_b64: str) -> dict | None:
-        """Claude Vision API에 스크린샷 + 프롬프트를 보내고 JSON 응답을 받는다."""
-        if not self._api_key:
+        """Claude Vision API에 스크린샷 + 프롬프트를 보내고 JSON 응답을 받는다.
+
+        우선순위: Supabase Edge Function → 로컬 API 키
+        """
+        # 1순위: Supabase Edge Function 프록시
+        if self._cloud_url and self._cloud_key:
+            result = await self._ask_via_edge_function(prompt, screenshot_b64)
+            if result is not None:
+                return result
+
+        # 2순위: 로컬 API 키 직접 호출
+        if self._api_key:
+            return await self._ask_direct(prompt, screenshot_b64)
+
+        self._log("  AI 호출 불가 (Edge Function/API 키 모두 없음)")
+        return None
+
+    async def _ask_via_edge_function(self, prompt: str, screenshot_b64: str) -> dict | None:
+        """Supabase Edge Function을 통해 Claude Vision을 호출한다."""
+        endpoint = f"{self._cloud_url}/functions/v1/analyze-selectors"
+        payload = {
+            "mode": "vision",
+            "prompt": prompt,
+            "screenshot_b64": screenshot_b64,
+            "system_prompt": SYSTEM_PROMPT,
+        }
+        headers = {
+            "Authorization": f"Bearer {self._cloud_key}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=45.0) as client:
+                resp = await client.post(endpoint, json=payload, headers=headers)
+                if resp.status_code != 200:
+                    self._log(f"  Edge Function 오류 {resp.status_code}: {resp.text[:100]}")
+                    return None
+                text = resp.json().get("result", "")
+                parsed = self._parse_json(text)
+                if parsed and "selectors" in parsed:
+                    parsed["selectors"] = self._sanitize_selectors(parsed["selectors"])
+                return parsed
+        except ImportError:
+            return await asyncio.get_event_loop().run_in_executor(
+                None, self._ask_edge_function_sync, prompt, screenshot_b64
+            )
+        except Exception as e:
+            self._log(f"  Edge Function 호출 실패: {e}")
             return None
 
+    def _ask_edge_function_sync(self, prompt: str, screenshot_b64: str) -> dict | None:
+        """requests를 이용한 동기 Edge Function 호출."""
+        try:
+            import requests
+            resp = requests.post(
+                f"{self._cloud_url}/functions/v1/analyze-selectors",
+                json={
+                    "mode": "vision",
+                    "prompt": prompt,
+                    "screenshot_b64": screenshot_b64,
+                    "system_prompt": SYSTEM_PROMPT,
+                },
+                headers={
+                    "Authorization": f"Bearer {self._cloud_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=45,
+            )
+            if resp.status_code != 200:
+                return None
+            text = resp.json().get("result", "")
+            parsed = self._parse_json(text)
+            if parsed and "selectors" in parsed:
+                parsed["selectors"] = self._sanitize_selectors(parsed["selectors"])
+            return parsed
+        except Exception as e:
+            self._log(f"  Edge Function 동기 호출 실패: {e}")
+            return None
+
+    async def _ask_direct(self, prompt: str, screenshot_b64: str) -> dict | None:
+        """로컬 API 키로 Claude Vision API를 직접 호출한다."""
         messages = [{
             "role": "user",
             "content": [
@@ -405,10 +495,7 @@ DOM 뼈대:
                         "data": screenshot_b64,
                     },
                 },
-                {
-                    "type": "text",
-                    "text": prompt,
-                },
+                {"type": "text", "text": prompt},
             ],
         }]
 
@@ -438,15 +525,14 @@ DOM 뼈대:
                     parsed["selectors"] = self._sanitize_selectors(parsed["selectors"])
                 return parsed
         except ImportError:
-            # httpx 없으면 requests 동기 폴백
             return await asyncio.get_event_loop().run_in_executor(
-                None, self._ask_ai_sync, prompt, screenshot_b64
+                None, self._ask_direct_sync, prompt, screenshot_b64
             )
         except Exception as e:
             self._log(f"  AI 호출 실패: {e}")
             return None
 
-    def _ask_ai_sync(self, prompt: str, screenshot_b64: str) -> dict | None:
+    def _ask_direct_sync(self, prompt: str, screenshot_b64: str) -> dict | None:
         """requests를 이용한 동기 Claude Vision 호출."""
         try:
             import requests
