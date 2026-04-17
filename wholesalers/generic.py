@@ -535,15 +535,18 @@ class GenericWholesaler(WholesalerBase):
         cart_candidates = [
             '#btn_saveBag', '#btn_cart', '#btnCart', '#addCart',
             'button.btn_cart', '.btn-cart',
-            'img[alt*="담기"]', 'img[alt*="장바구니"]',
+            'img[alt*="담기"]', 'img[alt*="장바구니"]', 'img[alt*="추가"]',
+            'input[type="image"][alt*="담기"]', 'input[type="image"][alt*="추가"]',
+            'input[type="image"][alt*="장바구니"]', 'input[type="image"][src*="cart"]',
+            'input[type="image"][src*="save"]', 'input[type="image"][src*="bag"]',
             'button:has-text("추가")',
             'button:has-text("담기")',
             'button:has-text("장바구니")',
             'a:has-text("추가")',
             'a:has-text("담기")',
             'a:has-text("장바구니 담기")',
-            'a:has(img[alt*="담기"])',
-            'td:last-child a',
+            'a:has(img[alt*="담기"])', 'a:has(img[alt*="추가"])',
+            'td:last-child a', 'td:last-child img',
             'input[type="button"][value*="추가"]',
             'input[type="button"][value*="담기"]',
             'span:has-text("추가")',
@@ -994,10 +997,25 @@ DOM 뼈대:
                 await page.press(login_sel["pw_input"], "Enter")
             await page.wait_for_timeout(4000)
 
-            # 로그인 성공 확인
+            # 로그인 성공 확인 (login_async와 동일한 다중 판정)
+            before_url = self.url
+            current_url = page.url
+            url_changed = current_url != before_url and "login" not in current_url.lower()
+
             id_field = await page.query_selector(login_sel["id_input"])
-            form_gone = not id_field or not await id_field.is_visible()
-            if not form_gone:
+            pw_field = await page.query_selector(login_sel["pw_input"])
+            form_gone = (not id_field or not await id_field.is_visible()) and \
+                        (not pw_field or not await pw_field.is_visible())
+
+            logout_el = None
+            for sel in ['a:has-text("로그아웃")', 'a:has-text("LOGOUT")',
+                        'button:has-text("로그아웃")']:
+                logout_el = await page.query_selector(sel)
+                if logout_el:
+                    break
+
+            login_success = url_changed or form_gone or (logout_el is not None)
+            if not login_success:
                 self._progress("로그인 실패")
                 return all_selectors
             self._progress("로그인 성공")
