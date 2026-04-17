@@ -892,6 +892,11 @@ class GenericWholesaler(WholesalerBase):
         self._progress(f"사이트 분석 시작: {self.url}")
         all_selectors = {"url": self.url, "name": self.name}
 
+        # 기존 로컬 캐시 삭제 — 잘못된 셀렉터가 남아있을 수 있음
+        from core.selector_store import delete_selectors
+        delete_selectors(self._wid)
+        self._selectors = {}
+
         try:
             from core.visual_agent import VisualAgent
             from core.ai_analyzer import _load_api_key
@@ -913,7 +918,10 @@ class GenericWholesaler(WholesalerBase):
                 progress=self._progress,
             )
 
-            if ai_selectors:
+            # AI 로그인 성공 + 검색 셀렉터가 있을 때만 저장
+            has_login = bool(ai_selectors.get("login", {}).get("id_input"))
+            has_search = bool(ai_selectors.get("search", {}).get("search_input"))
+            if has_login and has_search:
                 for key in ["login", "search", "table", "confirm"]:
                     ai_part = ai_selectors.get(key, {})
                     if ai_part:
@@ -922,7 +930,7 @@ class GenericWholesaler(WholesalerBase):
                 all_selectors["ai_agent_used"] = True
                 self._progress("AI 사이트 분석 완료")
             else:
-                self._progress("AI 분석 실패 — 셀렉터를 찾지 못함")
+                self._progress("AI 분석 불완전 — 로그인 또는 검색 셀렉터 없음")
 
             # 이력/반품 페이지 탐색 (별도 네비게이션 필요)
             self._progress("이력/반품 페이지 탐색 중...")

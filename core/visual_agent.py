@@ -126,6 +126,11 @@ class VisualAgent:
 목표: 이 페이지에서 로그인 폼의 CSS 셀렉터를 찾으세요.
 {f"이전 시도 피드백: {retry_hint}" if retry_hint else ""}
 
+중요 규칙:
+- DOM 뼈대에 실제 존재하는 요소만 사용하세요. 존재하지 않는 클래스명을 지어내지 마세요.
+- 로그인 버튼은 button:has-text("로그인") 또는 input[type="submit"] 형태가 일반적입니다.
+- id가 있으면 #id, 없으면 :has-text() 사용
+
 찾아야 할 셀렉터:
 - id_input: 아이디/ID 입력 필드
 - pw_input: 비밀번호 입력 필드
@@ -204,17 +209,23 @@ DOM 뼈대:
         for attempt in range(MAX_RETRIES):
             screenshot, dom = await self._capture(page)
             history = " → ".join(self._step_history)
-            prompt = f"""현재 단계: 검색 기능 탐지
+            prompt = f"""현재 단계: 약품 검색 기능 탐지
 이전 단계: {history}
 목표: 약품을 검색할 수 있는 입력 필드와 버튼을 찾으세요.
 {f"이전 시도 피드백: {retry_hint}" if retry_hint else ""}
+
+중요 규칙:
+- DOM 뼈대에 실제 존재하는 요소만 사용하세요. 존재하지 않는 클래스명을 지어내지 마세요.
+- 약품 검색 필드를 찾으세요. 거래처/회원 검색이 아닙니다.
+- 현재 페이지가 약품 주문 페이지가 아닌 경우(거래처 관리, 메인 대시보드 등), needs_navigation으로 주문/검색 페이지 링크를 찾으세요.
+- "주문", "약품", "상품", "발주" 관련 메뉴가 약품 주문 페이지입니다.
 
 찾아야 할 셀렉터:
 - search_input: 약품명 또는 보험코드 검색 입력 필드
 - search_btn: 검색 버튼 (없으면 null — Enter 키로 대체)
 
-현재 페이지에 검색 기능이 없으면:
-- needs_navigation: 검색/주문 페이지로 이동할 링크나 메뉴의 셀렉터
+현재 페이지에 약품 검색 기능이 없으면:
+- needs_navigation: 약품 주문/검색 페이지로 이동할 링크나 메뉴의 셀렉터
 
 DOM 뼈대:
 {dom}
