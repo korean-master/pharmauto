@@ -264,15 +264,27 @@ class GenericWholesaler(WholesalerBase):
         """현재 페이지가 약품 주문/장바구니 담기가 가능한 페이지인지 판단한다.
 
         기준:
-        - 검색 input이 있거나
+        - 검색 input + 약품 관련 키워드가 있거나
         - 장바구니/담기/추가 버튼이 있거나
         - 제품 테이블 + 수량 input이 있으면 True
         """
         page = self._page
 
-        # 검색 input 있으면 OK
+        # 검색 input 있으면 — 단, 거래처/비약품 페이지가 아닌지 확인
         search = await self._detect_search()
         if search.get("search_input"):
+            # 페이지에 약품 관련 키워드가 있는지 확인
+            body_text = await page.inner_text("body")
+            drug_keywords = ["보험코드", "약품", "제품", "품목", "장바구니", "담기",
+                             "주문", "규격", "포장", "단가"]
+            non_drug_keywords = ["거래처코드", "거래처명", "사업자번호"]
+            drug_score = sum(1 for kw in drug_keywords if kw in body_text)
+            non_drug_score = sum(1 for kw in non_drug_keywords if kw in body_text)
+            if drug_score >= 2 and non_drug_score < 2:
+                return True
+            if non_drug_score >= 2 and drug_score < 2:
+                return False
+            # 점수가 애매하면 검색 input 존재만으로 True
             return True
 
         # 장바구니/담기 버튼 있으면 OK
@@ -397,6 +409,10 @@ class GenericWholesaler(WholesalerBase):
         "cart": ["추가", "담기", "장바구니", "cart", "주문"],
     }
 
+    # 약품 테이블이 아닌 것을 구분하기 위한 거부 키워드
+    _NON_DRUG_HEADERS = ["거래처코드", "거래처명", "사업자번호", "거래처주소",
+                         "거래처구분", "회원명", "회원코드", "게시판", "공지"]
+
     async def _detect_result_table(self, insurance_code: str) -> dict:
         """검색 결과 테이블 구조를 헤더 텍스트 기반으로 탐지한다."""
         page = self._page
@@ -432,6 +448,13 @@ class GenericWholesaler(WholesalerBase):
 
         if header_texts:
             self._progress(f"  테이블 헤더: {header_texts}")
+
+            # 거래처/비약품 테이블 감지 → 거부
+            joined = " ".join(header_texts)
+            non_drug_count = sum(1 for kw in self._NON_DRUG_HEADERS if kw in joined)
+            if non_drug_count >= 2:
+                self._progress(f"  ⚠ 약품 테이블 아님 (거래처/기타) → 무시")
+                return {}
             for i, header in enumerate(header_texts):
                 header_lower = header.lower()
                 for col_type, keywords in self.HEADER_MAP.items():
@@ -964,6 +987,41 @@ class GenericWholesaler(WholesalerBase):
                         break
 
                 all_selectors["table"] = table_sel
+
+                # 검색 결과가 비약품 테이블이면 → 현재 검색 셀렉터 폐기, 주문 페이지 재탐색
+                if not table_sel or not table_sel.get("result_rows"):
+                    self._progress("현재 페이지 검색 결과 없음 → 주문 페이지 메뉴 탐색...")
+                    search_sel = {}
+                    all_selectors["search"] = {}
+                    order_info = await self._find_order_page()
+                    if order_info.get("search", {}).get("search_input"):
+                        all_selectors["order_url"] = order_info["order_url"]
+                        search_sel = order_info["search"]
+                        all_selectors["search"] = search_sel
+                        self._progress(f"주문 페이지 발견: {order_info['order_url']}")
+                        # 주문 페이지에서 다시 검색 시도
+                        await page.goto(order_info["order_url"],
+                                        wait_until="domcontentloaded")
+                        await page.wait_for_timeout(2000)
+                        for term in search_terms:
+                            self._progress(f"  [{term}] 재검색 중...")
+                            await page.fill(search_sel["search_input"], '')
+                            await page.wait_for_timeout(300)
+                            await page.fill(search_sel["search_input"], term)
+                            searched = False
+                            if search_sel.get("search_btn"):
+                                try:
+                                    await page.click(search_sel["search_btn"])
+                                    searched = True
+                                except Exception:
+                                    pass
+                            if not searched:
+                                await page.press(search_sel["search_input"], "Enter")
+                            await page.wait_for_timeout(3000)
+                            table_sel = await self._detect_result_table(test_code)
+                            if table_sel and table_sel.get("result_rows"):
+                                break
+                        all_selectors["table"] = table_sel
 
             # 4. 주문확정 버튼 분석
             self._progress("4/5 주문확정 버튼 분석 중...")
