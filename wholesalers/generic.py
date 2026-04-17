@@ -1046,50 +1046,28 @@ class GenericWholesaler(WholesalerBase):
                     self._selectors.pop("order_url", None)
                     self._save_selectors(self._selectors)
 
-            # ── Step 2: 검색 셀렉터 탐지 (현재 페이지 기준) ──
-            if not self._selectors.get("search"):
-                search_sel = await self._detect_search()
-                self._selectors["search"] = search_sel
-                self._save_selectors(self._selectors)
-
-            # ── Step 3: 여전히 검색창 없으면 → 주문 페이지 메뉴 자동 탐색 ──
+            # ── Step 2: 검색 셀렉터 없으면 → AI 시각 에이전트로 전체 재분석 ──
             if not self._selectors.get("search", {}).get("search_input"):
-                self._progress("검색창 없음 → 주문 페이지 메뉴 탐색 중...")
-                order_info = await self._find_order_page()
-                if order_info.get("search", {}).get("search_input"):
-                    self._selectors["order_url"] = order_info["order_url"]
-                    self._selectors["search"] = order_info["search"]
-                    self._selectors["confidence"] = "provisional"
-                    self._save_selectors(self._selectors)
-                    self._progress(f"주문 페이지 탐색 성공 → {order_info['order_url']}")
-
-            # ── Step 4: 그래도 없으면 → Claude AI DOM 분석 (최후 수단) ──
-            if not self._selectors.get("search", {}).get("search_input"):
-                self._progress("메뉴 탐색 실패 → Claude AI 분석 시도 중...")
+                self._progress("검색 셀렉터 없음 → AI 사이트 분석 시도 중...")
                 try:
-                    from core.ai_analyzer import analyze_selectors, is_available
-                    if is_available():
-                        ai_result = await analyze_selectors(
-                            page, site_url=self.url, wid=self._wid
-                        )
-                        if ai_result:
-                            self._selectors.setdefault("search", {}).update(
-                                {k: v for k, v in ai_result.items()
-                                 if k in ("search_input", "search_btn")}
-                            )
-                            if ai_result.get("result_rows"):
-                                self._selectors.setdefault("table", {})["result_rows"] = ai_result["result_rows"]
-                            if ai_result.get("cart_btn"):
-                                self._selectors.setdefault("table", {})["cart_btn"] = ai_result["cart_btn"]
-                            if ai_result.get("qty_input"):
-                                self._selectors.setdefault("table", {})["qty_input"] = ai_result["qty_input"]
-                            self._selectors["confidence"] = "provisional"
+                    from core.visual_agent import VisualAgent
+                    from core.ai_analyzer import _load_api_key
+                    agent = VisualAgent(api_key=_load_api_key(), wid=self._wid)
+                    if agent._can_call_ai():
+                        # 현재 브라우저의 page를 agent에 연결
+                        agent._page = page
+                        agent._progress = self._progress
+                        search_result = await agent._step_search()
+                        if search_result.success and search_result.selectors.get("search_input"):
+                            self._selectors["search"] = search_result.selectors
                             self._save_selectors(self._selectors)
-                            self._progress("Claude AI 분석 완료 → 셀렉터 임시 저장")
+                            self._progress(f"AI 검색 분석 완료: {search_result.selectors.get('search_input')}")
+                        else:
+                            self._progress(f"AI 검색 분석 실패: {search_result.error}")
                     else:
-                        self._progress("Claude API 키 없음 - settings.json에 claude_api_key 추가 필요")
+                        self._progress("AI 분석 불가 (Edge Function/API 키 없음)")
                 except Exception as e:
-                    self._progress(f"Claude AI 분석 오류: {e}")
+                    self._progress(f"AI 검색 분석 오류: {e}")
         else:
             self._progress("로그인 실패")
             await self._screenshot(f"generic_{self._wid}_login_fail.png")
