@@ -878,12 +878,80 @@ class GenericWholesaler(WholesalerBase):
 
     # ────── 전체 사이트 분석 ──────
 
+    async def _ai_navigate_to_order_page(self) -> str | None:
+        """AI에게 스크린샷을 보여주고 약품 주문 페이지로 네비게이션한다.
+
+        Returns:
+            주문 페이지 URL 또는 None (이미 주문 페이지이거나 탐색 실패)
+        """
+        page = self._page
+        try:
+            from core.visual_agent import VisualAgent
+            from core.ai_analyzer import _load_api_key
+            agent = VisualAgent(api_key=_load_api_key(), wid=self._wid)
+            if not agent._can_call_ai():
+                return None
+
+            for attempt in range(3):
+                screenshot, dom = await agent._capture(page)
+                prompt = f"""현재 페이지의 스크린샷과 DOM을 보고 답하세요.
+
+질문: 이 페이지가 약품 주문/검색 페이지인가요?
+
+판단 기준:
+- 약품명이나 보험코드를 입력해서 검색할 수 있는 입력창이 있으면 → 주문 페이지
+- 거래처, 회원, 공지사항, 대시보드 등이면 → 주문 페이지 아님
+
+주문 페이지가 아니라면:
+- 메뉴에서 "주문", "발주", "약품", "상품", "검색" 관련 링크를 찾아주세요
+- 해당 링크의 CSS 셀렉터를 알려주세요
+
+DOM 뼈대:
+{dom}
+
+응답 (반드시 JSON만):
+{{"is_order_page": true}} 또는
+{{"is_order_page": false, "nav_selector": "a:has-text(\\"주문\\")", "observation": "왼쪽 메뉴에 주문 링크 발견"}}"""
+
+                response = await agent._ask_ai(prompt, screenshot)
+                if not response:
+                    self._progress(f"  AI 응답 없음 (시도 {attempt+1}/3)")
+                    continue
+
+                if response.get("is_order_page"):
+                    self._progress("  현재 페이지가 약품 주문 페이지")
+                    return page.url
+
+                nav_sel = response.get("nav_selector")
+                if nav_sel:
+                    self._progress(f"  AI 네비게이션: {nav_sel}")
+                    try:
+                        await page.click(nav_sel, timeout=5000)
+                        await page.wait_for_timeout(3000)
+                        # 이동 후 검색 필드가 있는지 확인
+                        search = await self._detect_search()
+                        if search.get("search_input"):
+                            self._progress(f"  주문 페이지 도착: {page.url}")
+                            return page.url
+                    except Exception as e:
+                        self._progress(f"  네비게이션 실패: {e}")
+                        continue
+                else:
+                    obs = response.get("observation", "")
+                    self._progress(f"  AI: {obs}")
+
+        except Exception as e:
+            self._progress(f"  AI 네비게이션 오류: {e}")
+        return None
+
     async def analyze_site(self, test_code: str = "646201260",
                            headless: bool = True) -> dict:
-        """사이트 구조를 AI 시각 에이전트로 분석하고 셀렉터를 캐시한다.
+        """사이트 구조를 분석하고 셀렉터를 캐시한다.
 
-        스크린샷 + DOM을 Claude AI에 보내서 셀렉터를 찾는다.
-        휴리스틱 패턴 대입 없이 AI가 직접 판단한다.
+        하이브리드 방식:
+        - 로그인: 휴리스틱 (확실함)
+        - 주문 페이지 찾기: AI (페이지 맥락 이해)
+        - 검색/테이블: 휴리스틱 (맞는 페이지에서 정확함)
 
         Args:
             test_code: 검색 테스트용 보험코드
@@ -898,48 +966,121 @@ class GenericWholesaler(WholesalerBase):
         self._selectors = {}
 
         try:
-            from core.visual_agent import VisualAgent
-            from core.ai_analyzer import _load_api_key
-
-            api_key = _load_api_key()
-            agent = VisualAgent(api_key=api_key, wid=self._wid)
-
-            if not agent._can_call_ai():
-                self._progress("AI 분석 불가 (Edge Function/API 키 모두 없음)")
-                return all_selectors
-
-            # AI 시각 에이전트로 전체 분석 (로그인→검색→테이블→주문확정)
             await self._launch(headless=headless)
             page = self._page
             page.on("dialog", lambda d: d.accept())
 
-            ai_selectors = await agent.run(
-                page, self.url, self.user_id, self.password,
-                progress=self._progress,
-            )
+            # ── 1단계: 로그인 (휴리스틱) ──
+            self._progress("1/4 로그인 분석 중...")
+            await page.goto(self.url, wait_until="domcontentloaded")
+            await page.wait_for_timeout(3000)
 
-            # AI 로그인 성공 + 검색 셀렉터가 있을 때만 저장
-            has_login = bool(ai_selectors.get("login", {}).get("id_input"))
-            has_search = bool(ai_selectors.get("search", {}).get("search_input"))
-            if has_login and has_search:
-                for key in ["login", "search", "table", "confirm"]:
-                    ai_part = ai_selectors.get(key, {})
-                    if ai_part:
-                        all_selectors[key] = ai_part
-                all_selectors["auto_detected"] = True
-                all_selectors["ai_agent_used"] = True
-                self._progress("AI 사이트 분석 완료")
+            login_sel = await self._detect_login()
+            all_selectors["login"] = login_sel
+
+            if not login_sel.get("id_input") or not login_sel.get("pw_input"):
+                self._progress("로그인 폼 탐지 실패")
+                return all_selectors
+
+            self._progress("1/4 로그인 시도 중...")
+            await page.fill(login_sel["id_input"], self.user_id)
+            await page.fill(login_sel["pw_input"], self.password)
+            if login_sel.get("login_btn"):
+                try:
+                    await page.click(login_sel["login_btn"])
+                except Exception:
+                    await page.press(login_sel["pw_input"], "Enter")
             else:
-                self._progress("AI 분석 불완전 — 로그인 또는 검색 셀렉터 없음")
+                await page.press(login_sel["pw_input"], "Enter")
+            await page.wait_for_timeout(4000)
 
-            # 이력/반품 페이지 탐색 (별도 네비게이션 필요)
-            self._progress("이력/반품 페이지 탐색 중...")
+            # 로그인 성공 확인
+            id_field = await page.query_selector(login_sel["id_input"])
+            form_gone = not id_field or not await id_field.is_visible()
+            if not form_gone:
+                self._progress("로그인 실패")
+                return all_selectors
+            self._progress("로그인 성공")
+
+            # ── 2단계: 약품 주문 페이지 찾기 (AI) ──
+            self._progress("2/4 약품 주문 페이지 탐색 중 (AI)...")
+            order_url = await self._ai_navigate_to_order_page()
+            if order_url:
+                all_selectors["order_url"] = order_url
+
+            # ── 3단계: 검색/테이블 분석 (휴리스틱 — 이제 맞는 페이지) ──
+            self._progress("3/4 검색/테이블 분석 중...")
+            search_sel = await self._detect_search()
+            all_selectors["search"] = search_sel
+
+            if search_sel.get("search_input"):
+                # 검색 테스트
+                search_terms = []
+                try:
+                    from core.drug_api import get_drug_name
+                    from core.inventory import load_inventory
+                    import re as _re
+                    dname = get_drug_name(test_code)
+                    if dname == test_code:
+                        dname = load_inventory().get(test_code, {}).get("drug_name", test_code)
+                    short_name = _re.split(
+                        r'(정|캡슐|캡|시럽|액|산|환|주|크림|연고|점안|점이|패치|필름|과립'
+                        r'|밀리|미리|그램|mg|ML|ml|\d|[()\s])',
+                        dname, flags=_re.IGNORECASE
+                    )[0].strip()
+                    if short_name and short_name != test_code and len(short_name) >= 2:
+                        search_terms.append(short_name)
+                except Exception:
+                    pass
+                search_terms.append(test_code)
+
+                self._progress(f"  검색 테스트: {search_terms}")
+                table_sel = {}
+                for term in search_terms:
+                    self._progress(f"  [{term}] 검색 중...")
+                    try:
+                        await page.wait_for_selector(
+                            search_sel["search_input"], state="visible", timeout=5000)
+                    except Exception:
+                        continue
+                    await page.fill(search_sel["search_input"], '')
+                    await page.wait_for_timeout(300)
+                    await page.fill(search_sel["search_input"], term)
+                    searched = False
+                    if search_sel.get("search_btn"):
+                        try:
+                            await page.click(search_sel["search_btn"])
+                            searched = True
+                        except Exception:
+                            pass
+                    if not searched:
+                        await page.press(search_sel["search_input"], "Enter")
+                    await page.wait_for_timeout(3000)
+                    table_sel = await self._detect_result_table(test_code)
+                    if table_sel and table_sel.get("result_rows"):
+                        break
+                all_selectors["table"] = table_sel
+
+            # 분석 성공 판정
+            has_search = bool(search_sel.get("search_input"))
+            all_selectors["auto_detected"] = has_search
+
+            # ── 4단계: 주문확정 + 이력 페이지 ──
+            self._progress("4/4 주문확정/이력 분석 중...")
+            confirm_sel = await self._detect_confirm()
+            all_selectors["confirm"] = confirm_sel
+
             try:
                 history_config = await self._detect_history_page()
                 if history_config:
                     all_selectors["history"] = history_config
             except Exception:
                 pass
+
+            if all_selectors["auto_detected"]:
+                self._progress("사이트 분석 성공")
+            else:
+                self._progress("사이트 분석 불완전 — 검색 셀렉터 없음")
 
         except Exception as e:
             self._progress(f"사이트 분석 오류: {e}")
@@ -1046,28 +1187,22 @@ class GenericWholesaler(WholesalerBase):
                     self._selectors.pop("order_url", None)
                     self._save_selectors(self._selectors)
 
-            # ── Step 2: 검색 셀렉터 없으면 → AI 시각 에이전트로 전체 재분석 ──
+            # ── Step 2: 검색 셀렉터 없으면 → AI로 주문 페이지 찾기 → 휴리스틱 검색 탐지 ──
             if not self._selectors.get("search", {}).get("search_input"):
-                self._progress("검색 셀렉터 없음 → AI 사이트 분석 시도 중...")
-                try:
-                    from core.visual_agent import VisualAgent
-                    from core.ai_analyzer import _load_api_key
-                    agent = VisualAgent(api_key=_load_api_key(), wid=self._wid)
-                    if agent._can_call_ai():
-                        # 현재 브라우저의 page를 agent에 연결
-                        agent._page = page
-                        agent._progress = self._progress
-                        search_result = await agent._step_search()
-                        if search_result.success and search_result.selectors.get("search_input"):
-                            self._selectors["search"] = search_result.selectors
-                            self._save_selectors(self._selectors)
-                            self._progress(f"AI 검색 분석 완료: {search_result.selectors.get('search_input')}")
-                        else:
-                            self._progress(f"AI 검색 분석 실패: {search_result.error}")
+                self._progress("검색 셀렉터 없음 → AI로 주문 페이지 탐색 중...")
+                order_url = await self._ai_navigate_to_order_page()
+                if order_url:
+                    self._selectors["order_url"] = order_url
+                    # 주문 페이지에서 휴리스틱 검색 탐지
+                    search_sel = await self._detect_search()
+                    if search_sel.get("search_input"):
+                        self._selectors["search"] = search_sel
+                        self._save_selectors(self._selectors)
+                        self._progress(f"주문 페이지 검색 필드 발견: {search_sel['search_input']}")
                     else:
-                        self._progress("AI 분석 불가 (Edge Function/API 키 없음)")
-                except Exception as e:
-                    self._progress(f"AI 검색 분석 오류: {e}")
+                        self._progress("주문 페이지에서도 검색 필드 못 찾음")
+                else:
+                    self._progress("AI 주문 페이지 탐색 실패")
         else:
             self._progress("로그인 실패")
             await self._screenshot(f"generic_{self._wid}_login_fail.png")
