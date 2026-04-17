@@ -124,137 +124,81 @@ class GenericWholesaler(WholesalerBase):
 
     # ────── 자동 탐지: 검색 ──────
 
-    async def _detect_search(self) -> dict:
-        """약품 검색 관련 셀렉터를 자동 탐지한다.
+    # 약품 주문 페이지의 검색 입력창에서 흔히 보이는 placeholder/label 키워드
+    _DRUG_SEARCH_KEYWORDS = [
+        "품목", "약품", "제품", "보험코드", "상품", "KD코드", "KD 코드",
+        "보험CD", "약명", "제품명", "품명", "상품명",
+    ]
+    # 거래처/비약품 검색 필드의 키워드 (이게 포함되면 건너뜀)
+    _NON_DRUG_SEARCH_KEYWORDS = ["거래처", "회원", "사업자", "업체"]
 
-        1단계: 알려진 패턴으로 탐지
-        2단계: 조회/검색 버튼 주변 input 탐지 (폴백)
-        3단계: label 텍스트 기반 탐지 (폴백)
+    async def _detect_search(self) -> dict:
+        """약품 검색 입력창을 탐지한다.
+
+        핵심 원리: placeholder나 주변 텍스트에 약품 관련 키워드가 있는 input을 찾는다.
+        검색 실행은 엔터 키 (대부분의 도매상 공통).
         """
         page = self._page
         selectors = {}
 
-        # ── 1단계: 알려진 패턴 ──
-        search_candidates = [
-            'input#txt_product',
-            'input#P_SRH_KEY',
-            'input#tx_physic',
-            'input#srchTxt',
-            'input#searchKeyword',
-            'input#prodNm',
-            'input[placeholder*="보험코드"]',
-            'input[placeholder*="품목명"]',
-            'input[placeholder*="약품"]',
-            'input[placeholder*="상품"]',
-            'input[placeholder*="검색"]',
-            'input[placeholder*="KD코드"]',
-            'input[placeholder*="제품명"]',
-            'input.search-input', 'input.product-input',
+        # ── 1단계: placeholder에 약품 키워드가 있는 input 찾기 (가장 확실) ──
+        all_inputs = await page.query_selector_all(
+            'input[type="text"], input[type="search"], input:not([type])'
+        )
+        for inp in all_inputs:
+            if not await inp.is_visible():
+                continue
+            placeholder = (await inp.get_attribute("placeholder") or "").strip()
+            if not placeholder:
+                continue
+            # 거래처 키워드가 있으면 건너뜀
+            if any(kw in placeholder for kw in self._NON_DRUG_SEARCH_KEYWORDS):
+                continue
+            # 약품 키워드가 있으면 이거다
+            if any(kw in placeholder for kw in self._DRUG_SEARCH_KEYWORDS):
+                inp_id = await inp.get_attribute("id") or ""
+                inp_name = await inp.get_attribute("name") or ""
+                if inp_id:
+                    sel = f"#{inp_id}"
+                elif inp_name:
+                    sel = f'input[name="{inp_name}"]'
+                else:
+                    sel = f'input[placeholder*="{placeholder[:6]}"]'
+                selectors["search_input"] = sel
+                self._progress(f"  검색 필드 탐지(placeholder): {sel} — \"{placeholder}\"")
+                return selectors  # 엔터로 검색하므로 버튼 불필요
+
+        # ── 2단계: 알려진 ID/name 패턴 (placeholder 없는 사이트) ──
+        known_ids = [
+            'input#txt_product', 'input#P_SRH_KEY', 'input#tx_physic',
+            'input#srchTxt', 'input#searchKeyword', 'input#prodNm',
             'input[name="searchWord"]', 'input[name="keyword"]',
             'input[name="tx_physic"]', 'input[name="srchText"]',
         ]
-        for sel in search_candidates:
+        for sel in known_ids:
             el = await page.query_selector(sel)
             if el and await el.is_visible():
                 selectors["search_input"] = sel
-                self._progress(f"  검색 필드 탐지: {sel}")
-                break
+                self._progress(f"  검색 필드 탐지(known ID): {sel}")
+                return selectors
 
-        # ── 2단계: 조회/검색 버튼 주변 input 탐지 (1단계 실패 시) ──
-        if not selectors.get("search_input"):
-            btn_labels = [
-                'input[type="submit"][value*="조회"]',
-                'input[type="button"][value*="조회"]',
-                'button:has-text("조회")',
-                'button:has-text("검색")',
-                'a:has-text("조회")',
-            ]
-            for btn_sel in btn_labels:
-                btn = await page.query_selector(btn_sel)
-                if not btn or not await btn.is_visible():
+        # ── 3단계: label에 약품 키워드가 있는 input ──
+        for kw in self._DRUG_SEARCH_KEYWORDS:
+            try:
+                label = await page.query_selector(
+                    f'label:has-text("{kw}"), th:has-text("{kw}")'
+                )
+                if not label:
                     continue
-                try:
-                    # 같은 form/table/div 안의 텍스트 input 탐색
-                    container = await btn.evaluate_handle(
-                        'el => el.closest("form") || el.closest("table") || el.parentElement'
-                    )
-                    inputs = await container.query_selector_all(
-                        'input[type="text"], input:not([type]), input[type="search"]'
-                    )
-                    for inp in inputs:
-                        if not await inp.is_visible():
-                            continue
-                        inp_id = await inp.get_attribute("id") or ""
-                        inp_name = await inp.get_attribute("name") or ""
-                        if inp_id:
-                            sel = f"#{inp_id}"
-                        elif inp_name:
-                            sel = f'input[name="{inp_name}"]'
-                        else:
-                            sel = 'input[type="text"]'
-                        selectors["search_input"] = sel
-                        selectors["search_btn"] = btn_sel
-                        self._progress(f"  검색 필드 탐지(버튼 근처): {sel}")
-                        break
-                except Exception:
-                    pass
-                if selectors.get("search_input"):
-                    break
-
-        # ── 3단계: label 텍스트 기반 input 탐지 (여전히 없을 때) ──
-        if not selectors.get("search_input"):
-            for label_text in ["제품명", "품목명", "약품명", "KD코드", "검색어", "보험코드"]:
-                try:
-                    label = await page.query_selector(
-                        f'label:has-text("{label_text}"), td:has-text("{label_text}")'
-                    )
-                    if not label:
-                        continue
-                    for_attr = await label.get_attribute("for") or ""
-                    if for_attr:
-                        inp = await page.query_selector(f"#{for_attr}")
-                        if inp and await inp.is_visible():
-                            selectors["search_input"] = f"#{for_attr}"
-                            self._progress(f"  검색 필드 탐지(label): #{for_attr}")
-                            break
-                    # label 다음 sibling input 탐색
-                    sibling_inp = await label.evaluate_handle(
-                        'el => el.nextElementSibling'
-                    )
-                    if sibling_inp:
-                        tag = await sibling_inp.evaluate('el => el.tagName')
-                        if tag and tag.upper() == "INPUT":
-                            inp_id = await sibling_inp.get_attribute("id") or ""
-                            inp_name = await sibling_inp.get_attribute("name") or ""
-                            sel = f"#{inp_id}" if inp_id else f'input[name="{inp_name}"]' if inp_name else None
-                            if sel:
-                                selectors["search_input"] = sel
-                                self._progress(f"  검색 필드 탐지(label sibling): {sel}")
-                                break
-                except Exception:
-                    continue
-
-        # ── 검색 버튼 탐지 ──
-        if not selectors.get("search_btn"):
-            btn_candidates = [
-                '#btn_search', '#btnSearch', '#btn_search2', '#searchBtn',
-                'button.btn_search', 'button.search-btn',
-                'button[onclick*="Srh"]', 'button[onclick*="search"]',
-                'input[type="submit"][value*="조회"]',
-                'input[type="button"][value*="조회"]',
-                'input[type="submit"]',
-                'img[alt*="조회"]', 'img[alt*="검색"]', 'img[src*="search"]',
-                'button:has-text("조회")',
-                'button:has-text("검색")',
-                'a:has(img[alt*="조회"])', 'a:has(img[alt*="검색"])',
-                'a:has-text("조회")', # 최후의 수단
-            ]
-            for sel in btn_candidates:
-                el = await page.query_selector(sel)
-                if el and await el.is_visible():
-                    selectors["search_btn"] = sel
-                    self._progress(f"  검색 버튼 탐지: {sel}")
-                    break
+                for_attr = await label.get_attribute("for") or ""
+                if for_attr:
+                    inp = await page.query_selector(f"#{for_attr}")
+                    if inp and await inp.is_visible():
+                        selectors["search_input"] = f"#{for_attr}"
+                        self._progress(f"  검색 필드 탐지(label '{kw}'): #{for_attr}")
+                        return selectors
+            except Exception:
+                continue
 
         return selectors
 
@@ -263,28 +207,13 @@ class GenericWholesaler(WholesalerBase):
     async def _is_orderable_page(self) -> bool:
         """현재 페이지가 약품 주문/장바구니 담기가 가능한 페이지인지 판단한다.
 
-        기준:
-        - 검색 input + 약품 관련 키워드가 있거나
-        - 장바구니/담기/추가 버튼이 있거나
-        - 제품 테이블 + 수량 input이 있으면 True
+        핵심: 약품 관련 placeholder가 있는 검색 입력창이 있으면 주문 페이지.
         """
         page = self._page
 
-        # 검색 input 있으면 — 단, 거래처/비약품 페이지가 아닌지 확인
+        # 약품 관련 placeholder가 있는 검색 입력창 있으면 OK
         search = await self._detect_search()
         if search.get("search_input"):
-            # 페이지에 약품 관련 키워드가 있는지 확인
-            body_text = await page.inner_text("body")
-            drug_keywords = ["보험코드", "약품", "제품", "품목", "장바구니", "담기",
-                             "주문", "규격", "포장", "단가"]
-            non_drug_keywords = ["거래처코드", "거래처명", "사업자번호"]
-            drug_score = sum(1 for kw in drug_keywords if kw in body_text)
-            non_drug_score = sum(1 for kw in non_drug_keywords if kw in body_text)
-            if drug_score >= 2 and non_drug_score < 2:
-                return True
-            if non_drug_score >= 2 and drug_score < 2:
-                return False
-            # 점수가 애매하면 검색 input 존재만으로 True
             return True
 
         # 장바구니/담기 버튼 있으면 OK
@@ -354,12 +283,28 @@ class GenericWholesaler(WholesalerBase):
                 except Exception:
                     continue
 
-            self._progress(f"  전체 링크 {len(all_links)}개 발견 → 순차 탐색")
+            # 키워드 우선순위로 정렬 (주문/발주 > 약품/상품 > 검색/조회)
+            _PRIORITY_KEYWORDS = [
+                ("주문", 10), ("발주", 10), ("order", 10),
+                ("약품", 8), ("상품", 8), ("품목", 8), ("product", 8),
+                ("검색", 5), ("조회", 5), ("search", 5),
+            ]
+            for link in all_links:
+                score = 0
+                link_text = link["text"].lower()
+                link_href = link["href"].lower()
+                for kw, pts in _PRIORITY_KEYWORDS:
+                    if kw in link_text or kw in link_href:
+                        score += pts
+                link["score"] = score
+            all_links.sort(key=lambda x: x["score"], reverse=True)
+
+            self._progress(f"  전체 링크 {len(all_links)}개 발견 → 우선순위 탐색")
         except Exception as e:
             self._progress(f"  링크 수집 오류: {e}")
             return {}
 
-        # ── 3단계: 모든 링크 방문 → 주문 가능 판단 ──
+        # ── 3단계: 우선순위 순서로 링크 방문 → 주문 가능 판단 ──
         for cand in all_links[:15]:  # 최대 15개 링크 시도
             href = cand["href"]
             target = href if href.startswith("http") else urljoin(current_url, href)
