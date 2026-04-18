@@ -146,7 +146,7 @@ def _upload_to_supabase(structure: dict, program_name: str) -> bool:
                 "auth": structure.get("auth", "windows"),
                 "error": structure.get("error", ""),
             },
-            "log_tail": schema_json[:30000],
+            "log_tail": schema_json[:500000],
         }
         r = requests.post(
             _api_url("error_logs"),

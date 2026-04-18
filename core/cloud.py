@@ -565,7 +565,7 @@ def upload_structure_analysis(
             "level": "STRUCTURE_ANALYSIS",
             "message": f"{name} ({wid}) 구조 진단",
             "context": {"wid": wid, "name": name, "url": url},
-            "log_tail": analysis_json[:30000],
+            "log_tail": analysis_json[:500000],
         }
         r = requests.post(
             _api_url("error_logs"),

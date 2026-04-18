@@ -21,6 +21,15 @@ _conn_cache = None
 _conn_failed = False  # 연결 실패 시 세션 내 재시도 방지
 
 
+def _get_program() -> str:
+    """현재 설정된 약국 프로그램 이름을 반환한다."""
+    try:
+        s = _load_settings()
+        return (s.get("pharmacy_program") or "epharm").lower()
+    except Exception:
+        return "epharm"
+
+
 def get_connection():
     """DB 연결을 반환한다. 연결이 살아있으면 재사용한다.
 
@@ -92,10 +101,11 @@ def fetch_prescriptions(time_range: str = "all",
                         start_time: str = "", end_time: str = ""):
     """실제 출고 데이터를 조회한다 (대체조제 반영).
 
-    STOCKDATE 테이블에서 실제 나간 약품을 기준으로 조회한다.
-    시간대 필터가 있으면 prsdrug+prescript 조인으로 해당 시간대에
-    조제된 보험코드만 필터링한다.
+    프로그램에 따라 이팜(STOCKDATE) 또는 유팜(tbl조제약품) 쿼리를 사용.
     """
+    if _get_program() == "upharm":
+        from core.db_upharm import fetch_prescriptions as _fn
+        return _fn(get_connection, time_range, start_time, end_time)
     now = datetime.now()
     if time_range == "yesterday":
         target_date = (now - timedelta(days=1)).strftime("%Y%m%d")
@@ -165,6 +175,9 @@ def fetch_prescriptions(time_range: str = "all",
 
 def fetch_all_prescribed_drugs(months: int = 3) -> list[dict]:
     """최근 N개월 내 출고 이력이 있는 약품의 보험코드와 약품명을 조회한다."""
+    if _get_program() == "upharm":
+        from core.db_upharm import fetch_all_prescribed_drugs as _fn
+        return _fn(get_connection, months)
     print(f"[DB] 처방 약품 목록 조회 중 (최근 {months}개월)...")
     conn = get_connection()
     if conn is None:
@@ -218,6 +231,9 @@ def fetch_all_prescribed_drugs(months: int = 3) -> list[dict]:
 
 def fetch_last_month_usage():
     """지난달 약품별 실제 출고량을 조회한다 (STOCKDATE 기반)."""
+    if _get_program() == "upharm":
+        from core.db_upharm import fetch_last_month_usage as _fn
+        return _fn(get_connection)
     now = datetime.now()
     if now.month == 1:
         year, month = now.year - 1, 12
@@ -252,6 +268,9 @@ def fetch_drug_usage(insurance_code: str) -> dict:
     Returns:
         {"this_week": int, "this_month": int, "last_month": int}
     """
+    if _get_program() == "upharm":
+        from core.db_upharm import fetch_drug_usage as _fn
+        return _fn(get_connection, insurance_code)
     now = datetime.now()
     today = now.strftime("%Y%m%d")
 
