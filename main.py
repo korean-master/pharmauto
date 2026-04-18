@@ -530,9 +530,35 @@ def main():
 
     apply_palette(app)
 
+    # 스플래시 — 콜드 스타트 동안 사용자 피드백 (메인 창 뜰 때까지 표시)
+    from PyQt6.QtWidgets import QSplashScreen
+    from PyQt6.QtGui import QPixmap
+    from PyQt6.QtCore import Qt as _Qt
+    splash = None
+    splash_png = os.path.join(ROOT_DIR, "ui", "icons", "pharmauto_256.png")
+    if os.path.exists(splash_png):
+        pix = QPixmap(splash_png).scaled(
+            280, 280, _Qt.AspectRatioMode.KeepAspectRatio,
+            _Qt.TransformationMode.SmoothTransformation,
+        )
+        splash = QSplashScreen(pix, _Qt.WindowType.WindowStaysOnTopHint)
+        splash.showMessage(
+            f"PharmAuto v{VERSION} 로딩 중...",
+            _Qt.AlignmentFlag.AlignBottom | _Qt.AlignmentFlag.AlignHCenter,
+            _Qt.GlobalColor.black,
+        )
+        splash.show()
+        app.processEvents()
+
+    def _hide_splash():
+        if splash is not None:
+            splash.hide()
+            app.processEvents()
+
     # 활성화 안 됐으면 코드 입력
     from core.auth import is_activated
     if not is_activated():
+        _hide_splash()
         from ui.activation_dialog import ActivationDialog
         dlg = ActivationDialog()
         dlg.exec()
@@ -540,12 +566,13 @@ def main():
             sys.exit(0)
 
     # 메인 윈도우 뜨기 전에 업데이트 체크 & 자동 적용
-    # (설치 마법사보다 먼저 — DB 연결 실패 수정 배포 후 업데이트로 해결 가능)
+    _hide_splash()
     _check_and_apply_update(app)
 
     # 첫 실행이거나 DB 연결 불가 시 설치 마법사
     from ui.setup_wizard import needs_setup
     if needs_setup() or _db_connection_broken():
+        _hide_splash()
         from ui.setup_wizard import SetupWizard
         wizard = SetupWizard()
         wizard.exec()
@@ -568,6 +595,8 @@ def main():
 
     window = PharmAutoWindow()
     window.show()
+    if splash is not None:
+        splash.finish(window)
 
     sys.exit(app.exec())
 

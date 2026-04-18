@@ -132,19 +132,19 @@ def download_and_apply(download_url: str, progress_callback=None,
             f.write("  timeout /t 2 /nobreak >nul\r\n")
             f.write("  goto wait_loop\r\n")
             f.write(")\r\n")
-            # VERYSILENT: UI 없음, SUPPRESSMSGBOXES: 에러 팝업 억제
+            # SILENT: 진행 UI 표시 (질문 없음, 취소 불가) — 사용자에게 피드백
             f.write(f'start /wait "" "{installer_path}" '
-                    f"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART\r\n")
-            # 설치 완료 후 앱 재시작
+                    f"/SILENT /SUPPRESSMSGBOXES /NORESTART\r\n")
+            # 설치 완료 후 앱 재시작 (콜드 스타트 대비 짧은 대기)
             app_dir = os.path.dirname(sys.executable)
             app_exe = os.path.join(app_dir, "PharmAuto.exe")
+            f.write("timeout /t 1 /nobreak >nul\r\n")
             f.write(f'if exist "{app_exe}" start "" "{app_exe}"\r\n')
 
-        # 헬퍼 실행 (백그라운드, 콘솔 숨김)
+        # 헬퍼 실행 — 콘솔 창 표시하여 진행 상황 사용자에게 보여줌
         subprocess.Popen(
             ["cmd.exe", "/c", helper_path],
             cwd=tmp_dir,
-            creationflags=subprocess.CREATE_NO_WINDOW,
         )
 
         return True
