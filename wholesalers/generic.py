@@ -1172,6 +1172,32 @@ DOM 뼈대:
 
         return login_success
 
+    # ────── _get_cart_count 오버라이드 (셀렉터 주입 지원) ──────
+
+    async def _get_cart_count(self) -> int:
+        """저장된 셀렉터에 cart_count_sel이 있으면 우선 사용, 없으면 부모 범용 로직."""
+        if not self._page:
+            return -1
+        try:
+            table = self._selectors.get("table", {}) if hasattr(self, "_selectors") else {}
+            custom_sel = table.get("cart_count_sel")
+        except Exception:
+            custom_sel = None
+
+        if custom_sel:
+            try:
+                el = self._page.locator(custom_sel).first
+                if await el.count() > 0:
+                    text = (await el.inner_text()).strip()
+                    import re
+                    nums = re.sub(r'[^\d]', '', text)
+                    if nums:
+                        return int(nums)
+            except Exception:
+                pass
+
+        return await super()._get_cart_count()
+
     # ────── test_connection 오버라이드 ──────
 
     async def test_connection(self, headless: bool = True) -> dict:

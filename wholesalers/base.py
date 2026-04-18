@@ -292,6 +292,16 @@ class WholesalerBase(ABC):
                             result["success"] = False
                             result["message"] = "장바구니에 추가되지 않음 (품절 가능)"
                             result["out_of_stock"] = True
+                    else:
+                        # 카운트 확인 불가 — 조용한 성공 방지용 미확인 플래그
+                        result["unverified"] = True
+                        result["message"] = (
+                            "자동 확인 불가 — 도매상 사이트에서 장바구니 직접 확인 필요"
+                        )
+                        self._progress(
+                            f"  [{code}] ⚠️ 담기 완료 표시됐으나 장바구니 카운트 "
+                            f"확인 불가 — 실제 담김 수동 확인 필요"
+                        )
 
                 order_result["results"].append(result)
                 if not result["success"]:
@@ -312,6 +322,10 @@ class WholesalerBase(ABC):
             await self._screenshot(f"{prefix}_cart_final.png")
 
             success_count = sum(1 for r in order_result["results"] if r["success"])
+            unverified_count = sum(
+                1 for r in order_result["results"]
+                if r.get("success") and r.get("unverified")
+            )
             fail_count = len(order_result["results"]) - success_count
             if success_count == 0:
                 fail_reasons = [r.get("message", "") for r in order_result["results"] if not r["success"]]
@@ -321,22 +335,36 @@ class WholesalerBase(ABC):
                 return order_result
 
             # 3. 주문확정
-            fail_note = f" (실패 {fail_count}건)" if fail_count else ""
+            notes = []
+            if fail_count:
+                notes.append(f"실패 {fail_count}건")
+            if unverified_count:
+                notes.append(f"⚠️ 미확인 {unverified_count}건 (수동 확인 필요)")
+            suffix = f" ({', '.join(notes)})" if notes else ""
             if dry_run:
                 self._progress(
-                    f"장바구니 {success_count}건 완료{fail_note}"
+                    f"장바구니 {success_count}건 완료{suffix}"
                 )
                 order_result["success"] = True
                 order_result["message"] = (
-                    f"장바구니 {success_count}건 완료{fail_note}"
+                    f"장바구니 {success_count}건 완료{suffix}"
                 )
             else:
+                if unverified_count == success_count:
+                    # 전부 미확인 — 주문확정 위험, 보류
+                    order_result["success"] = False
+                    order_result["message"] = (
+                        "⚠️ 모든 항목이 담김 확인 불가 — 주문확정 보류. "
+                        "도매상 사이트에서 장바구니 직접 확인 필요"
+                    )
+                    self._progress(order_result["message"])
+                    return order_result
                 self._progress("주문확정 중...")
                 await self._confirm_order()
                 await self._screenshot(f"{prefix}_order_confirmed.png")
                 order_result["success"] = True
-                order_result["message"] = f"주문 완료! {success_count}개 품목"
-                self._progress(f"주문 완료! {success_count}개 품목")
+                order_result["message"] = f"주문 완료! {success_count}개 품목{suffix}"
+                self._progress(f"주문 완료! {success_count}개 품목{suffix}")
 
         except Exception as e:
             order_result["message"] = f"오류 발생: {e}"
