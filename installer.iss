@@ -2,7 +2,7 @@
 ; 빌드: "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
 
 #define MyAppName "PharmAuto"
-#define MyAppVersion "1.5.24"
+#define MyAppVersion "1.5.25"
 #define MyAppPublisher "PharmAuto"
 #define MyAppExeName "PharmAuto.exe"
 #define BuildDir "dist_nuitka\main.dist"
@@ -40,8 +40,9 @@ Name: "startup"; Description: "Windows 시작 시 자동 실행"; GroupDescripti
 ; Nuitka 빌드 결과 — 플랫 구조 (exe + dll/pyd + 서브폴더 전부)
 Source: "{#BuildDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\*"; DestDir: "{app}"; Excludes: "{#MyAppExeName},config\*,data\*"; Flags: ignoreversion recursesubdirs createallsubdirs
-; config: settings.json 제외 (설치 마법사가 생성), 나머지는 기본값 포함
-Source: "config\*"; DestDir: "{app}\config"; Excludes: "settings.json"; Flags: onlyifdoesntexist recursesubdirs
+; config: settings.template.json만 동봉 (사용자 데이터 파일은 절대 미포함)
+; 설치 마법사와 앱 자체가 실행 시 필요한 json 파일을 빈 상태로 생성함
+Source: "config\settings.template.json"; DestDir: "{app}\config"; Flags: onlyifdoesntexist
 
 [Dirs]
 Name: "{app}\data"; Permissions: users-full

@@ -57,6 +57,7 @@ class StartupUpdateDialog(QDialog):
             Qt.WindowType.Dialog
             | Qt.WindowType.CustomizeWindowHint
             | Qt.WindowType.WindowTitleHint
+            | Qt.WindowType.WindowCloseButtonHint
         )
         self.setStyleSheet("QDialog { background: white; }")
 

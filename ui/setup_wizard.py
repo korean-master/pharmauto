@@ -36,6 +36,12 @@ IT3000_DB_HINTS = ["IT3000", "it3000", "InfoTech", "infotech", "PHARM", "pharm"]
 # exact match 순서대로 시도 (Log/Resources 등 보조 DB 제외)
 UPHARM_DB_CANDIDATES = ["atpharm", "upharm", "UPHARM"]
 
+# 유팜 SQL 읽기전용 자격증명 — 각 약국 배포 시 Plan B로 동일 계정 생성
+# 사용자 UI에 노출 없이 자동 적용. 바이너리에서 추출 가능하므로 추후
+# 활성화 코드 연계 원격 발급 방식으로 강화 예정.
+_UPHARM_SQL_USER = "pharmauto_ro"
+_UPHARM_SQL_PASS = "PharmAuto2026Ro!"
+
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 LOG_PATH = os.path.join(LOG_DIR, "setup_log.txt")
@@ -285,6 +291,7 @@ class SetupWizard(QDialog):
             Qt.WindowType.Dialog
             | Qt.WindowType.CustomizeWindowHint
             | Qt.WindowType.WindowTitleHint
+            | Qt.WindowType.WindowCloseButtonHint
         )
         self.setStyleSheet("QDialog { background: white; }")
         self._setup_complete = False
@@ -364,56 +371,6 @@ class SetupWizard(QDialog):
             layout.addWidget(radio)
         self._prog_radios["epharm"].setChecked(True)
 
-        # SQL 인증 입력 영역 (유팜 선택 시 노출)
-        self._sql_auth_widget = QLabel()
-        self._sql_auth_widget.setVisible(False)
-        # 실제 입력 위젯을 위한 별도 컨테이너
-        from PyQt6.QtWidgets import QWidget, QGridLayout
-        self._sql_auth_container = QWidget()
-        sql_lay = QGridLayout(self._sql_auth_container)
-        sql_lay.setContentsMargins(20, 8, 0, 8)
-        sql_lay.setHorizontalSpacing(10)
-        sql_lay.setVerticalSpacing(8)
-        sql_info = QLabel(
-            "유팜은 SQL 서버 계정으로 접속해야 합니다.\n"
-            "개발자가 단일 사용자 모드로 생성한 읽기전용 계정을 입력하세요."
-        )
-        sql_info.setWordWrap(True)
-        sql_info.setStyleSheet(
-            "font-size: 12px; color: #4B5563; "
-            "font-family: 'Malgun Gothic'; padding: 6px 10px; "
-            "background: #F9FAFB; border-radius: 6px;"
-        )
-        sql_lay.addWidget(sql_info, 0, 0, 1, 2)
-
-        id_label = QLabel("SQL ID:")
-        id_label.setStyleSheet("font-size: 12px; font-family: 'Malgun Gothic';")
-        self._sql_username = QLineEdit()
-        self._sql_username.setPlaceholderText("예: pharmauto_ro")
-        self._sql_username.setStyleSheet(
-            "QLineEdit { font-size: 12px; padding: 6px 10px; "
-            "border: 1px solid #DDD; border-radius: 6px; "
-            "font-family: 'Malgun Gothic'; }"
-        )
-        sql_lay.addWidget(id_label, 1, 0)
-        sql_lay.addWidget(self._sql_username, 1, 1)
-
-        pw_label = QLabel("SQL PW:")
-        pw_label.setStyleSheet("font-size: 12px; font-family: 'Malgun Gothic';")
-        self._sql_password = QLineEdit()
-        self._sql_password.setEchoMode(QLineEdit.EchoMode.Password)
-        self._sql_password.setPlaceholderText("SQL 계정 비밀번호")
-        self._sql_password.setStyleSheet(
-            "QLineEdit { font-size: 12px; padding: 6px 10px; "
-            "border: 1px solid #DDD; border-radius: 6px; "
-            "font-family: 'Malgun Gothic'; }"
-        )
-        sql_lay.addWidget(pw_label, 2, 0)
-        sql_lay.addWidget(self._sql_password, 2, 1)
-
-        self._sql_auth_container.setVisible(False)
-        layout.addWidget(self._sql_auth_container)
-
         layout.addStretch()
 
         # 프로그레스 바 (처음에 숨김)
@@ -462,37 +419,25 @@ class SetupWizard(QDialog):
         return "epharm"
 
     def _on_program_changed(self):
-        """유팜 선택 시 SQL 인증 입력 필드를 표시한다."""
-        is_upharm = self._prog_radios.get("upharm") and self._prog_radios["upharm"].isChecked()
-        if hasattr(self, "_sql_auth_container"):
-            self._sql_auth_container.setVisible(bool(is_upharm))
-            self.adjustSize()
+        """프로그램 선택 변경 시 후속 처리 (현재는 no-op, 추후 확장용)."""
+        pass
 
     def _on_start(self):
         prog = self._selected_program()
         auth_info = {"auth": "windows"}
 
+        # 유팜: 내부에 하드코딩된 읽기전용 SQL 계정으로 자동 인증
         if prog == "upharm":
-            username = self._sql_username.text().strip()
-            password = self._sql_password.text()
-            if not username or not password:
-                QMessageBox.warning(
-                    self, "입력 필요",
-                    "유팜은 SQL 인증이 필요합니다.\n"
-                    "SQL ID와 비밀번호를 모두 입력해주세요."
-                )
-                return
             auth_info = {
-                "auth": "sql", "username": username, "password": password,
+                "auth": "sql",
+                "username": _UPHARM_SQL_USER,
+                "password": _UPHARM_SQL_PASS,
             }
 
         # UI 잠금
         self._start_btn.setEnabled(False)
         for radio in self._prog_radios.values():
             radio.setEnabled(False)
-        if hasattr(self, "_sql_username"):
-            self._sql_username.setEnabled(False)
-            self._sql_password.setEnabled(False)
 
         self._progress_bar.setVisible(True)
         self._progress_bar.setValue(0)
