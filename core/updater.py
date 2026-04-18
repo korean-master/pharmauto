@@ -230,11 +230,48 @@ def _apply_full_installer_update(download_url: str, progress_callback=None,
         if m:
             new_version = m.group(1)
 
+        # 업데이트 진행 중 사용자에게 보여줄 HTA 팝업 (자동 닫힘)
+        hta_path = os.path.join(tmp_dir, "updating.hta")
+        with open(hta_path, "w", encoding="utf-8") as f:
+            f.write("""<html>
+<head>
+<title>PharmAuto 업데이트</title>
+<HTA:APPLICATION WINDOWSTATE="normal" SHOWINTASKBAR="no" SYSMENU="no"
+ CAPTION="yes" BORDER="thin" MAXIMIZEBUTTON="no" MINIMIZEBUTTON="no"
+ SCROLL="no" INNERBORDER="no" CONTEXTMENU="no" SELECTION="no"/>
+<style>
+body { font-family: 'Malgun Gothic'; text-align: center; padding: 28px;
+       background: #fff; margin: 0; color: #1A1A2E; }
+h3 { margin: 0 0 12px 0; font-size: 16px; }
+p { color: #6B7280; font-size: 12px; margin: 4px 0; }
+.bar { width: 100%; height: 4px; background: #E5E7EB; border-radius: 2px;
+       overflow: hidden; margin-top: 16px; }
+.bar > span { display: block; width: 40%; height: 100%; background: #4B6BFB;
+              animation: slide 1.4s infinite linear; }
+@keyframes slide { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
+</style>
+<script>
+window.resizeTo(400, 200);
+window.moveTo(screen.availWidth/2 - 200, screen.availHeight/2 - 100);
+setTimeout(function(){ window.close(); }, 18000);
+</script>
+</head>
+<body>
+<h3>PharmAuto 업데이트 적용 중</h3>
+<p>앱이 잠시 종료됩니다.</p>
+<p>완료되면 자동으로 다시 실행됩니다.</p>
+<div class="bar"><span></span></div>
+</body>
+</html>
+""")
+
         # 헬퍼 배치 스크립트: 앱 종료 대기 -> 설치 -> 검증 -> 재시작
         helper_path = os.path.join(tmp_dir, "_update.bat")
         with open(helper_path, "w", encoding="mbcs") as f:
             f.write("@echo off\r\n")
             f.write("chcp 65001 >nul\r\n")
+            # 진행 안내 팝업 표시 (자동 18초 후 닫힘, 비모달)
+            f.write(f'start "" mshta "{hta_path}"\r\n')
             # PharmAuto.exe가 완전히 종료될 때까지 대기
             f.write(":wait_loop\r\n")
             f.write('tasklist /FI "IMAGENAME eq PharmAuto.exe" 2>nul '
