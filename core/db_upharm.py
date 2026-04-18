@@ -1,12 +1,16 @@
 """유팜(UPHARM/atpharm) 전용 DB 쿼리 모듈.
 
 유팜 스키마는 이팜과 달리 한글 테이블/컬럼명을 사용한다.
-- 처방: `tbl처방약품` (청구코드, 약품명, 약품ID)
-- 조제: `tbl조제약품` (약품ID, 내방일, 소모량, 판매량, 조제판매ID)
+- 처방: `tbl처방약품` (청구코드, 약품명, 약품ID) — 청구코드 룩업 소스
+- 조제: `tbl조제약품` (약품ID, 내방일, 소모량, 판매량, 조제판매ID) — 실제 출고 소스
 - 처방전: `tbl처방전` (조제판매ID, 내방일)
 - 약품 마스터: `CD약품정보` (약품ID, 약품코드, 약품명, 현재고)
 
 보험코드는 `tbl처방약품.청구코드` 를 기준으로 삼는다 (이팜 SD_ISCODE 와 동일 의미).
+
+대체조제 처리: tbl조제약품.약품ID ≠ tbl처방약품.약품ID 인 경우(대체된 약품) 도
+집계되도록, `약품ID` 만으로 청구코드 룩업 (조제판매ID 조건 제거). 이렇게 하면
+이팜 STOCKDATE 가 "대체조제 반영" 했던 것과 동일한 효과.
 """
 
 from datetime import datetime, timedelta
@@ -85,16 +89,20 @@ def fetch_prescriptions(get_connection, time_range: str = "all",
         params.extend([ts, te])
 
     try:
+        # 약품ID만으로 청구코드 룩업 → 대체조제된 약품도 집계에 포함됨
         cursor.execute(f"""
-            SELECT p.청구코드, SUM(d.소모량) AS total_out
+            SELECT lookup.청구코드, SUM(d.소모량) AS total_out
             FROM tbl조제약품 d
-            INNER JOIN tbl처방약품 p
-                ON d.약품ID = p.약품ID AND d.조제판매ID = p.조제판매ID
+            INNER JOIN (
+                SELECT 약품ID, MAX(청구코드) AS 청구코드
+                FROM tbl처방약품
+                WHERE 청구코드 IS NOT NULL AND 청구코드 != ''
+                GROUP BY 약품ID
+            ) lookup ON d.약품ID = lookup.약품ID
             WHERE d.내방일 >= ? AND d.내방일 < ?
               AND d.소모량 > 0
-              AND p.청구코드 IS NOT NULL AND p.청구코드 != ''
               {time_filter}
-            GROUP BY p.청구코드
+            GROUP BY lookup.청구코드
             ORDER BY total_out DESC
         """, params)
         rows = cursor.fetchall()
@@ -119,29 +127,34 @@ def fetch_all_prescribed_drugs(get_connection, months: int = 3) -> list[dict]:
         return []
     cursor = conn.cursor()
 
+    # 약품ID → (청구코드, 약품명) 룩업 (조제판매ID 조건 제거 → 대체조제 포함)
+    lookup_sql = """
+        SELECT 약품ID,
+               MAX(청구코드) AS 청구코드,
+               MAX(약품명) AS 약품명
+        FROM tbl처방약품
+        WHERE 청구코드 IS NOT NULL AND 청구코드 != ''
+        GROUP BY 약품ID
+    """
+
     try:
         if months > 0:
             since = datetime.now() - timedelta(days=months * 31)
-            cursor.execute("""
-                SELECT p.청구코드, MAX(p.약품명) AS 약품명, SUM(d.소모량) AS total
+            cursor.execute(f"""
+                SELECT lookup.청구코드, lookup.약품명, SUM(d.소모량) AS total
                 FROM tbl조제약품 d
-                INNER JOIN tbl처방약품 p
-                    ON d.약품ID = p.약품ID AND d.조제판매ID = p.조제판매ID
-                WHERE d.내방일 >= ?
-                  AND d.소모량 > 0
-                  AND p.청구코드 IS NOT NULL AND p.청구코드 != ''
-                GROUP BY p.청구코드
+                INNER JOIN ({lookup_sql}) lookup ON d.약품ID = lookup.약품ID
+                WHERE d.내방일 >= ? AND d.소모량 > 0
+                GROUP BY lookup.청구코드, lookup.약품명
                 ORDER BY total DESC
             """, (since,))
         else:
-            cursor.execute("""
-                SELECT p.청구코드, MAX(p.약품명) AS 약품명, SUM(d.소모량) AS total
+            cursor.execute(f"""
+                SELECT lookup.청구코드, lookup.약품명, SUM(d.소모량) AS total
                 FROM tbl조제약품 d
-                INNER JOIN tbl처방약품 p
-                    ON d.약품ID = p.약품ID AND d.조제판매ID = p.조제판매ID
+                INNER JOIN ({lookup_sql}) lookup ON d.약품ID = lookup.약품ID
                 WHERE d.소모량 > 0
-                  AND p.청구코드 IS NOT NULL AND p.청구코드 != ''
-                GROUP BY p.청구코드
+                GROUP BY lookup.청구코드, lookup.약품명
                 ORDER BY total DESC
             """)
         rows = cursor.fetchall()
@@ -176,14 +189,17 @@ def fetch_last_month_usage(get_connection):
     cursor = conn.cursor()
     try:
         cursor.execute("""
-            SELECT p.청구코드, SUM(d.소모량) AS total
+            SELECT lookup.청구코드, SUM(d.소모량) AS total
             FROM tbl조제약품 d
-            INNER JOIN tbl처방약품 p
-                ON d.약품ID = p.약품ID AND d.조제판매ID = p.조제판매ID
+            INNER JOIN (
+                SELECT 약품ID, MAX(청구코드) AS 청구코드
+                FROM tbl처방약품
+                WHERE 청구코드 IS NOT NULL AND 청구코드 != ''
+                GROUP BY 약품ID
+            ) lookup ON d.약품ID = lookup.약품ID
             WHERE d.내방일 >= ? AND d.내방일 < ?
               AND d.소모량 > 0
-              AND p.청구코드 IS NOT NULL AND p.청구코드 != ''
-            GROUP BY p.청구코드
+            GROUP BY lookup.청구코드
         """, (start, end))
         result = {str(r[0]).strip(): int(r[1] or 0) for r in cursor.fetchall()}
         print(f"[DB] 전월 출고량: {len(result)}건")
@@ -210,24 +226,26 @@ def fetch_drug_usage(get_connection, insurance_code: str) -> dict:
     cursor = conn.cursor()
     result = {"this_week": 0, "this_month": 0, "last_month": 0}
 
+    # 특정 청구코드에 해당하는 약품ID 목록 — 대체조제 포함 집계를 위해
+    # tbl처방약품 에서 해당 청구코드에 묶인 모든 약품ID 를 모음
+    id_subquery = """
+        SELECT DISTINCT 약품ID FROM tbl처방약품 WHERE 청구코드 = ?
+    """
+
     def _sum(since, until=None):
         if until:
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT ISNULL(SUM(d.소모량), 0)
                 FROM tbl조제약품 d
-                INNER JOIN tbl처방약품 p
-                    ON d.약품ID = p.약품ID AND d.조제판매ID = p.조제판매ID
-                WHERE p.청구코드 = ? AND d.내방일 >= ? AND d.내방일 < ?
-                  AND d.소모량 > 0
+                WHERE d.약품ID IN ({id_subquery})
+                  AND d.내방일 >= ? AND d.내방일 < ? AND d.소모량 > 0
             """, (insurance_code, since, until))
         else:
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT ISNULL(SUM(d.소모량), 0)
                 FROM tbl조제약품 d
-                INNER JOIN tbl처방약품 p
-                    ON d.약품ID = p.약품ID AND d.조제판매ID = p.조제판매ID
-                WHERE p.청구코드 = ? AND d.내방일 >= ?
-                  AND d.소모량 > 0
+                WHERE d.약품ID IN ({id_subquery})
+                  AND d.내방일 >= ? AND d.소모량 > 0
             """, (insurance_code, since))
         row = cursor.fetchone()
         return int(row[0] or 0) if row else 0
