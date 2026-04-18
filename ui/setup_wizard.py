@@ -76,6 +76,32 @@ class AutoSetupWorker(QThread):
         # auth_info: {"auth": "windows"|"sql", "username": str, "password": str (plain)}
         self._auth_info = auth_info or {"auth": "windows"}
 
+    def _run_upharm_sql_setup(self) -> bool:
+        """유팜 SQL 읽기전용 계정 자동 생성 bat 실행 (UAC 1회 요청)."""
+        import subprocess
+        app_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        bat_path = os.path.join(app_root, "tools", "setup_upharm_sql.bat")
+        if not os.path.exists(bat_path):
+            _log(f"  스크립트 파일 없음: {bat_path}")
+            return False
+        try:
+            # PowerShell 로 관리자 권한 승격 + 완료까지 대기
+            cmd = [
+                "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-Command",
+                f"$p = Start-Process -FilePath '{bat_path}' -Verb RunAs -Wait "
+                f"-PassThru -WindowStyle Normal; exit $p.ExitCode",
+            ]
+            r = subprocess.run(cmd, timeout=300)
+            _log(f"  SQL 설정 스크립트 종료 코드: {r.returncode}")
+            return r.returncode == 0
+        except subprocess.TimeoutExpired:
+            _log("  SQL 설정 스크립트 타임아웃 (5분 초과)")
+            return False
+        except Exception as e:
+            _log(f"  SQL 설정 스크립트 실행 오류: {e}")
+            return False
+
     def run(self):
         import pyodbc
         from core.db_conn import build_conn_str
@@ -91,6 +117,21 @@ class AutoSetupWorker(QThread):
         target_db = info["db"]
         driver = info["driver"]
         result = {"success": False, "server": "", "database": "", "pharmacy_name": "", "error": ""}
+
+        # 유팜: 하드코딩된 SQL 계정(pharmauto_ro) 접속 전 자동 Plan B 실행
+        # (계정 이미 있으면 bat 내부에서 스킵, 없으면 단일 사용자 모드로 생성)
+        if self._program == "upharm":
+            self.progress.emit(5)
+            _log("  유팜 SQL 자동 설정 스크립트 실행...")
+            ok = self._run_upharm_sql_setup()
+            if not ok:
+                result["error"] = (
+                    "유팜 SQL 계정 자동 설정 실패. 관리자 권한 승인 필요, "
+                    "또는 SQL Server 서비스 상태를 확인해주세요."
+                )
+                self.finished.emit(result)
+                return
+            _log("  유팜 SQL 자동 설정 완료")
 
         # SQL 인증 선택 시 자격증명 검증
         if self._auth_info.get("auth") == "sql":

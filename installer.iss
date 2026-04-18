@@ -2,7 +2,7 @@
 ; 빌드: "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
 
 #define MyAppName "PharmAuto"
-#define MyAppVersion "1.5.30"
+#define MyAppVersion "1.5.32"
 #define MyAppPublisher "PharmAuto"
 #define MyAppExeName "PharmAuto.exe"
 #define BuildDir "dist_nuitka\main.dist"
@@ -33,7 +33,6 @@ PrivilegesRequired=admin
 Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "바탕화면에 바로가기 생성"; GroupDescription: "추가 옵션:"
 Name: "startup"; Description: "Windows 시작 시 자동 실행"; GroupDescription: "추가 옵션:"
 
 [Files]
@@ -43,6 +42,9 @@ Source: "{#BuildDir}\*"; DestDir: "{app}"; Excludes: "{#MyAppExeName},config\*,d
 ; config: settings.template.json만 동봉 (사용자 데이터 파일은 절대 미포함)
 ; 설치 마법사와 앱 자체가 실행 시 필요한 json 파일을 빈 상태로 생성함
 Source: "config\settings.template.json"; DestDir: "{app}\config"; Flags: onlyifdoesntexist
+; tools: 유팜 SQL 자동 설정용 스크립트 + PsExec
+Source: "tools\setup_upharm_sql.bat"; DestDir: "{app}\tools"; Flags: ignoreversion
+Source: "tools\psexec64.exe"; DestDir: "{app}\tools"; Flags: ignoreversion
 
 [Dirs]
 Name: "{app}\data"; Permissions: users-full
@@ -54,8 +56,8 @@ Name: "{app}\screenshots"; Permissions: users-full
 ; 시작 메뉴
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"
 Name: "{group}\{#MyAppName} 제거"; Filename: "{uninstallexe}"; IconFilename: "{app}\{#MyAppExeName}"
-; 바탕화면
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+; 바탕화면 — 항상 생성 (사용자가 앱 위치 쉽게 찾을 수 있도록)
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"
 
 [Registry]
 ; Windows 시작 시 자동 실행 등록

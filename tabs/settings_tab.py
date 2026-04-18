@@ -605,16 +605,6 @@ class SettingsTab(QWidget):
         self._remote_status.setStyleSheet(DESCRIPTION)
         remote_btn_row.addWidget(self._remote_status)
 
-        log_btn = QPushButton("오류 로그 열기")
-        log_btn.setStyleSheet(
-            f"QPushButton {{ font-size: 13px; padding: 10px 24px; "
-            f"background: #6B7280; color: white; border: none; "
-            f"border-radius: 8px; font-weight: 600; font-family: 'Malgun Gothic'; }}"
-            f"QPushButton:hover {{ background: #4B5563; }}"
-        )
-        log_btn.clicked.connect(self._on_open_log)
-        remote_btn_row.addWidget(log_btn)
-
         send_log_btn = QPushButton("오류 로그 보내기")
         send_log_btn.setStyleSheet(
             f"QPushButton {{ font-size: 13px; padding: 10px 24px; "
@@ -2365,7 +2355,7 @@ class SettingsTab(QWidget):
         except Exception as e:
             QMessageBox.warning(
                 self, "전송 실패",
-                f"로그 전송에 실패했습니다.\n오류 로그 열기로 직접 확인해주세요."
+                f"로그 전송에 실패했습니다.\n네트워크 상태를 확인하고 다시 시도해주세요."
             )
 
     def _on_remote_support(self):

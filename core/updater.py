@@ -120,11 +120,24 @@ def download_and_apply(download_url: str, progress_callback=None,
 
         _progress("다운로드 완료, 앱 종료 후 설치를 시작합니다...")
 
-        # 헬퍼 배치 스크립트: 앱 종료 대기 -> 설치 실행
+        # 업데이트 완료 마커 — 재시작 후 첫 기동에서 업데이트 중복 체크 방지용
+        app_dir = os.path.dirname(sys.executable)
+        app_exe = os.path.join(app_dir, "PharmAuto.exe")
+        data_dir = os.path.join(app_dir, "data")
+        marker_path = os.path.join(data_dir, "installed_version.txt")
+        new_version = ""
+        # 다운로드 URL의 tag 부분에서 버전 추출 (예: /v1.5.31/ → 1.5.31)
+        import re as _re
+        m = _re.search(r'/v?(\d+\.\d+\.\d+)/', download_url)
+        if m:
+            new_version = m.group(1)
+
+        # 헬퍼 배치 스크립트: 앱 종료 대기 -> 설치 -> 검증 -> 재시작
         helper_path = os.path.join(tmp_dir, "_update.bat")
         with open(helper_path, "w", encoding="mbcs") as f:
             f.write("@echo off\r\n")
-            # PharmAuto.exe가 완전히 종료될 때까지 대기 (최대 30초)
+            f.write("chcp 65001 >nul\r\n")
+            # PharmAuto.exe가 완전히 종료될 때까지 대기
             f.write(":wait_loop\r\n")
             f.write('tasklist /FI "IMAGENAME eq PharmAuto.exe" 2>nul '
                     '| find /I "PharmAuto.exe" >nul\r\n')
@@ -132,19 +145,42 @@ def download_and_apply(download_url: str, progress_callback=None,
             f.write("  timeout /t 2 /nobreak >nul\r\n")
             f.write("  goto wait_loop\r\n")
             f.write(")\r\n")
-            # SILENT: 진행 UI 표시 (질문 없음, 취소 불가) — 사용자에게 피드백
+            # SILENT 설치 (진행 UI만 표시)
             f.write(f'start /wait "" "{installer_path}" '
                     f"/SILENT /SUPPRESSMSGBOXES /NORESTART\r\n")
-            # 설치 완료 후 앱 재시작 (콜드 스타트 대비 짧은 대기)
-            app_dir = os.path.dirname(sys.executable)
-            app_exe = os.path.join(app_dir, "PharmAuto.exe")
+            f.write("set INSTALL_CODE=%ERRORLEVEL%\r\n")
+            # 설치 실패 팝업
+            f.write("if not %INSTALL_CODE%==0 (\r\n")
+            f.write(
+                '  mshta "javascript:alert(\'PharmAuto 업데이트 설치 실패. '
+                '기존 버전으로 실행됩니다.\');close()"\r\n'
+            )
+            f.write(")\r\n")
+            # 업데이트 마커 작성 (설치 성공 시만)
+            if new_version:
+                f.write(f'if %INSTALL_CODE%==0 (\r\n')
+                f.write(f'  if not exist "{data_dir}" mkdir "{data_dir}"\r\n')
+                f.write(f'  echo {new_version}> "{marker_path}"\r\n')
+                f.write(f')\r\n')
+            # 앱 기동 + 프로세스 생존 확인
             f.write("timeout /t 1 /nobreak >nul\r\n")
             f.write(f'if exist "{app_exe}" start "" "{app_exe}"\r\n')
+            f.write("timeout /t 5 /nobreak >nul\r\n")
+            f.write('tasklist /FI "IMAGENAME eq PharmAuto.exe" 2>nul '
+                    '| find /I "PharmAuto.exe" >nul\r\n')
+            f.write("if not %ERRORLEVEL%==0 (\r\n")
+            f.write(
+                '  mshta "javascript:alert(\'PharmAuto 실행 실패. '
+                '바탕화면 아이콘에서 수동으로 실행해주세요.\');close()"\r\n'
+            )
+            f.write(")\r\n")
+            f.write("exit /b 0\r\n")
 
-        # 헬퍼 실행 — 콘솔 창 표시하여 진행 상황 사용자에게 보여줌
+        # 헬퍼 실행 — cmd 창 숨김 (스플래시와 mshta 팝업이 피드백 담당)
         subprocess.Popen(
             ["cmd.exe", "/c", helper_path],
             cwd=tmp_dir,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
 
         return True

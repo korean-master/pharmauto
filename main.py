@@ -185,6 +185,7 @@ class PharmAutoWindow(QMainWindow):
         2) 정상 경로: 정리 후 즉시 os._exit
         """
         import threading
+        self._force_quit = True
         threading.Timer(3.0, lambda: os._exit(1)).start()
         try:
             self._tray.hide()
@@ -377,12 +378,41 @@ class PharmAutoWindow(QMainWindow):
         )
 
     def closeEvent(self, event):
-        # X 버튼 = 완전히 종료 (트레이 메뉴 "완전히 종료"와 동일)
-        self._quit_app()
+        # X 버튼 = 트레이로 최소화 (창만 숨김, 프로세스는 계속)
+        # 완전히 종료하려면 트레이 아이콘 우클릭 → "완전히 종료"
+        if self._force_quit:
+            event.accept()
+            return
+        event.ignore()
+        self.hide()
+        try:
+            if self._tray and self._tray.supportsMessages():
+                self._tray.showMessage(
+                    "PharmAuto",
+                    "트레이에서 계속 실행됩니다.\n완전히 종료하려면 트레이 아이콘 우클릭 → 완전히 종료.",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    3000,
+                )
+        except Exception:
+            pass
 
 
 def _check_and_apply_update(app: QApplication):
     """앱 시작 시 업데이트를 확인하고, 있으면 자동 적용 후 재시작한다."""
+    # 방금 업데이트 직후 마커 체크 — 이중 설치 사이클 방지
+    marker_path = os.path.join(ROOT_DIR, "data", "installed_version.txt")
+    if os.path.exists(marker_path):
+        try:
+            with open(marker_path, "r", encoding="utf-8") as f:
+                installed_ver = f.read().strip()
+            os.remove(marker_path)
+            from core.version import VERSION
+            if installed_ver and installed_ver >= VERSION:
+                print(f"[업데이트] 방금 {installed_ver} 설치됨 - 체크 스킵")
+                return
+        except Exception as e:
+            print(f"[업데이트] 마커 읽기 실패: {e}")
+
     try:
         from core.updater import check_update
         info = check_update()
