@@ -29,16 +29,18 @@ class UpdateDownloadWorker(QThread):
     progress = pyqtSignal(str)
     finished = pyqtSignal(bool)
 
-    def __init__(self, download_url: str, expected_hash: str = ""):
+    def __init__(self, download_url: str, expected_hash: str = "",
+                 is_delta: bool = False):
         super().__init__()
         self._url = download_url
         self._hash = expected_hash
+        self._is_delta = is_delta
 
     def run(self):
         from core.updater import download_and_apply
         ok = download_and_apply(
             self._url, progress_callback=self.progress.emit,
-            expected_hash=self._hash
+            expected_hash=self._hash, is_delta=self._is_delta,
         )
         self.finished.emit(ok)
 
@@ -99,6 +101,7 @@ class StartupUpdateDialog(QDialog):
         self._worker = UpdateDownloadWorker(
             self._info["download_url"],
             self._info.get("expected_hash", ""),
+            is_delta=self._info.get("is_delta", False),
         )
         self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_finished)

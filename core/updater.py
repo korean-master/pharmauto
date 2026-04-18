@@ -21,6 +21,7 @@ CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "settings.
 
 REPO = "korean-master/pharmauto"
 INSTALLER_NAME = "PharmAutoSetup.exe"
+DELTA_EXE_NAME = "PharmAuto.exe"
 
 
 def _parse_version(v: str) -> tuple[int, ...]:
@@ -61,35 +62,132 @@ def check_update() -> dict | None:
     if latest <= current:
         return None
 
-    # PharmAutoSetup.exe 에셋 찾기
-    download_url = ""
+    # 에셋 탐색: 델타(PharmAuto.exe) 우선, 없으면 풀 인스톨러 폴백
+    delta_url = ""
+    installer_url = ""
     for asset in data.get("assets", []):
         name = asset.get("name", "")
-        if name.lower() == INSTALLER_NAME.lower():
-            download_url = asset.get("browser_download_url", "")
-            break
+        if name == DELTA_EXE_NAME:
+            delta_url = asset.get("browser_download_url", "")
+        elif name.lower() == INSTALLER_NAME.lower():
+            installer_url = asset.get("browser_download_url", "")
 
+    download_url = delta_url or installer_url
     if not download_url:
         return None
 
     return {
         "version": tag.lstrip("vV"),
         "download_url": download_url,
+        "is_delta": bool(delta_url),
         "notes": data.get("body", "") or "",
     }
 
 
 def download_and_apply(download_url: str, progress_callback=None,
-                       expected_hash: str = "") -> bool:
-    """설치파일을 다운로드하고, 앱 종료 후 설치를 실행한다.
+                       expected_hash: str = "", is_delta: bool = False) -> bool:
+    """업데이트 파일을 다운로드하고 적용한다.
 
-    1. PharmAutoSetup.exe 다운로드
-    2. 헬퍼 스크립트 생성 (앱 종료 대기 -> 설치 실행)
-    3. 헬퍼 실행 -> 앱 종료 -> 파일 잠금 해제 후 설치 진행
-
-    Returns:
-        True if download successful (설치는 앱 종료 후 별도 프로세스)
+    is_delta=True: PharmAuto.exe 만 받아서 현재 exe 를 교체 (설치 UI 없음, 빠름).
+    is_delta=False: PharmAutoSetup.exe 받아서 /VERYSILENT 로 재설치 (의존성 바뀐 경우).
     """
+    if is_delta:
+        return _apply_delta_update(download_url, progress_callback)
+    return _apply_full_installer_update(download_url, progress_callback, expected_hash)
+
+
+def _apply_delta_update(download_url: str, progress_callback=None) -> bool:
+    """PharmAuto.exe 만 다운로드 후 즉시 교체. 설치 과정 없이 빠른 업데이트."""
+    def _progress(msg):
+        print(f"[업데이트] {msg}")
+        if progress_callback:
+            progress_callback(msg)
+
+    tmp_dir = tempfile.mkdtemp(prefix="pharmauto_delta_")
+    new_exe = os.path.join(tmp_dir, DELTA_EXE_NAME)
+
+    try:
+        _progress("다운로드 중...")
+        resp = requests.get(download_url, stream=True, timeout=60)
+        resp.raise_for_status()
+        total = int(resp.headers.get("content-length", 0))
+        downloaded = 0
+        last_pct = -1
+        with open(new_exe, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=65536):
+                f.write(chunk)
+                downloaded += len(chunk)
+                if total > 0:
+                    pct = int(downloaded / total * 100)
+                    if pct >= last_pct + 10 or pct == 100:
+                        _progress(f"다운로드 중... {pct}%")
+                        last_pct = pct
+
+        _progress("다운로드 완료, 교체 준비 중...")
+
+        app_dir = os.path.dirname(sys.executable)
+        current_exe = os.path.join(app_dir, "PharmAuto.exe")
+        data_dir = os.path.join(app_dir, "data")
+        marker_path = os.path.join(data_dir, "installed_version.txt")
+
+        helper_path = os.path.join(tmp_dir, "_delta.bat")
+        with open(helper_path, "w", encoding="mbcs") as f:
+            f.write("@echo off\r\n")
+            f.write("chcp 65001 >nul\r\n")
+            # 현재 PharmAuto.exe 종료 대기
+            f.write(":wait_loop\r\n")
+            f.write('tasklist /FI "IMAGENAME eq PharmAuto.exe" 2>nul '
+                    '| find /I "PharmAuto.exe" >nul\r\n')
+            f.write("if %ERRORLEVEL%==0 (\r\n")
+            f.write("  timeout /t 1 /nobreak >nul\r\n")
+            f.write("  goto wait_loop\r\n")
+            f.write(")\r\n")
+            # exe 교체 (파일 잠금 해제 직후)
+            f.write(f'copy /Y "{new_exe}" "{current_exe}" >nul\r\n')
+            f.write("if not %ERRORLEVEL%==0 (\r\n")
+            f.write(
+                '  mshta "javascript:alert(\'PharmAuto 업데이트 교체 실패. '
+                '앱을 수동으로 다시 실행하거나 홈페이지에서 최신 인스톨러를 받아주세요.\');'
+                'close()"\r\n'
+            )
+            f.write("  exit /b 1\r\n")
+            f.write(")\r\n")
+            # 마커 저장 (재시작 후 업데이트 루프 방지)
+            f.write(f'if not exist "{data_dir}" mkdir "{data_dir}"\r\n')
+            # 현재 버전 = 서버에서 받은 최신 버전
+            # (배치에서 직접 알 수 없으므로 새 exe 실행 시 본인 VERSION 으로 기록하도록
+            #  여기서는 빈 파일만 생성 → 앱 시작 시 감지해서 체크 스킵)
+            f.write(f'echo updated> "{marker_path}"\r\n')
+            # 새 exe 실행
+            f.write("timeout /t 1 /nobreak >nul\r\n")
+            f.write(f'start "" "{current_exe}"\r\n')
+            # 실행 확인
+            f.write("timeout /t 5 /nobreak >nul\r\n")
+            f.write('tasklist /FI "IMAGENAME eq PharmAuto.exe" 2>nul '
+                    '| find /I "PharmAuto.exe" >nul\r\n')
+            f.write("if not %ERRORLEVEL%==0 (\r\n")
+            f.write(
+                '  mshta "javascript:alert(\'PharmAuto 실행 실패. '
+                '바탕화면 아이콘에서 수동으로 실행해주세요.\');close()"\r\n'
+            )
+            f.write(")\r\n")
+            f.write("exit /b 0\r\n")
+
+        subprocess.Popen(
+            ["cmd.exe", "/c", helper_path],
+            cwd=tmp_dir,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        _progress("교체 준비 완료, 앱 종료 후 자동 재시작됩니다.")
+        return True
+    except Exception as e:
+        _progress(f"델타 업데이트 실패: {e}")
+        return False
+
+
+def _apply_full_installer_update(download_url: str, progress_callback=None,
+                                  expected_hash: str = "") -> bool:
+    """전체 인스톨러 다운로드 후 /VERYSILENT 로 재설치 (기존 방식)."""
     def _progress(msg):
         print(f"[업데이트] {msg}")
         if progress_callback:
@@ -145,9 +243,9 @@ def download_and_apply(download_url: str, progress_callback=None,
             f.write("  timeout /t 2 /nobreak >nul\r\n")
             f.write("  goto wait_loop\r\n")
             f.write(")\r\n")
-            # SILENT 설치 (진행 UI만 표시)
+            # VERYSILENT: 설치 UI 일체 없음 (progress bar 포함) — 사용자는 앱 종료 후 새 앱이 뜨는 것만 봄
             f.write(f'start /wait "" "{installer_path}" '
-                    f"/SILENT /SUPPRESSMSGBOXES /NORESTART\r\n")
+                    f"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART\r\n")
             f.write("set INSTALL_CODE=%ERRORLEVEL%\r\n")
             # 설치 실패 팝업
             f.write("if not %INSTALL_CODE%==0 (\r\n")
