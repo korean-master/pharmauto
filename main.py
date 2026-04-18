@@ -495,8 +495,9 @@ def _db_connection_broken() -> bool:
             f"SERVER={db['server']};"
             f"DATABASE={db.get('database', 'eP_PHARM')};"
             f"Trusted_Connection=yes;"
+            f"ApplicationIntent=ReadOnly;"
         )
-        conn = pyodbc.connect(conn_str, timeout=3)
+        conn = pyodbc.connect(conn_str, timeout=3, readonly=True)
         conn.close()
         return False
     except Exception:

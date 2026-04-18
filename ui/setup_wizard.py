@@ -256,14 +256,32 @@ class SetupWizard(QDialog):
         layout.setSpacing(18)
         layout.setContentsMargins(44, 40, 44, 36)
 
-        # 제목
+        # 제목 + 원격 지원 버튼 (상시 노출)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(12)
+
         title = QLabel("PharmAuto 초기 설정")
         title.setStyleSheet(
             "font-size: 22px; font-weight: 700; color: #1A1A2E; "
             "font-family: 'Malgun Gothic';"
         )
         title.setMinimumHeight(32)
-        layout.addWidget(title)
+        title_row.addWidget(title)
+        title_row.addStretch()
+
+        remote_btn = QPushButton("원격 지원")
+        remote_btn.setStyleSheet(
+            "QPushButton { font-size: 12px; padding: 6px 14px; "
+            "background: #EF4444; color: white; border: none; "
+            "border-radius: 6px; font-weight: 600; "
+            "font-family: 'Malgun Gothic'; }"
+            "QPushButton:hover { background: #DC2626; }"
+        )
+        remote_btn.setToolTip("AnyDesk 실행 + ID 복사")
+        remote_btn.clicked.connect(self._on_remote_support)
+        title_row.addWidget(remote_btn)
+
+        layout.addLayout(title_row)
 
         safety = QLabel(
             "읽기 전용으로 DB를 탐색합니다. 기존 프로그램에 영향을 주지 않습니다."
@@ -421,9 +439,14 @@ class SetupWizard(QDialog):
             # 3) 안내 + 로그 보내기 버튼
             log_msg = f"{result['error']}\n\n"
             if desktop_log:
-                log_msg += f"오류 로그가 바탕화면에 저장되었습니다.\n({os.path.basename(desktop_log)})"
-            else:
-                log_msg += "오류 로그 전송을 시도합니다."
+                log_msg += (
+                    f"오류 로그가 바탕화면에 저장되었습니다.\n"
+                    f"({os.path.basename(desktop_log)})\n\n"
+                )
+            log_msg += (
+                "오류 내용이 개발팀 서버로 자동 전송되었습니다.\n"
+                "우측 상단 '원격 지원' 버튼으로 즉시 지원 요청도 가능합니다."
+            )
             QMessageBox.warning(self, "설정 실패", log_msg)
 
             if not hasattr(self, "_send_log_btn"):
@@ -438,6 +461,11 @@ class SetupWizard(QDialog):
                 self._send_log_btn.clicked.connect(
                     lambda: self._upload_setup_log(result["error"], manual=True))
                 self.layout().addWidget(self._send_log_btn)
+
+    def _on_remote_support(self):
+        """AnyDesk 실행 + ID 복사 (초기 설정 화면 어디서나 호출 가능)."""
+        from core.remote_support import request_remote_support
+        request_remote_support(self)
 
     def _save_log_to_desktop(self, error_msg: str) -> str:
         """설치 오류 로그를 바탕화면에 저장한다. 경로를 반환."""

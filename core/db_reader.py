@@ -49,10 +49,11 @@ def get_connection():
         f"SERVER={server};"
         f"DATABASE={database};"
         f"Trusted_Connection=yes;"
+        f"ApplicationIntent=ReadOnly;"
     )
-    print(f"[DB] 연결: {server}/{database}")
+    print(f"[DB] 연결: {server}/{database} (읽기전용)")
     try:
-        _conn_cache = pyodbc.connect(conn_str, timeout=5)
+        _conn_cache = pyodbc.connect(conn_str, timeout=5, readonly=True)
         return _conn_cache
     except Exception as e:
         _conn_failed = True

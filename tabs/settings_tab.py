@@ -684,8 +684,9 @@ class SettingsTab(QWidget):
                 f"SERVER={server};"
                 f"DATABASE={database};"
                 f"Trusted_Connection=yes;"
+                f"ApplicationIntent=ReadOnly;"
             )
-            conn = pyodbc.connect(conn_str, timeout=3)
+            conn = pyodbc.connect(conn_str, timeout=3, readonly=True)
             conn.close()
             self.db_status_label.setText("연결 성공!")
             self.db_status_label.setStyleSheet(f"color: {_GREEN}; font-weight: 700;")
@@ -2240,80 +2241,17 @@ class SettingsTab(QWidget):
             )
 
     def _on_remote_support(self):
-        import os
-        import subprocess
-        import webbrowser
+        from core.remote_support import request_remote_support
+        success, message = request_remote_support(self)
 
-        # AnyDesk 경로 탐색
-        anydesk_paths = [
-            os.path.expandvars(r"%ProgramFiles(x86)%\AnyDesk\AnyDesk.exe"),
-            os.path.expandvars(r"%ProgramFiles%\AnyDesk\AnyDesk.exe"),
-            os.path.expandvars(r"%LOCALAPPDATA%\AnyDesk\AnyDesk.exe"),
-            os.path.expandvars(r"%APPDATA%\AnyDesk\AnyDesk.exe"),
-        ]
-
-        anydesk_exe = None
-        for path in anydesk_paths:
-            if os.path.exists(path):
-                anydesk_exe = path
-                break
-
-        if not anydesk_exe:
-            # AnyDesk 미설치
-            reply = QMessageBox.question(
-                self, "AnyDesk 미설치",
-                "원격 지원을 위해 AnyDesk가 필요합니다.\n"
-                "다운로드 페이지를 열까요?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if reply == QMessageBox.StandardButton.Yes:
-                webbrowser.open("https://anydesk.com/ko/downloads")
-            return
-
-        # AnyDesk 실행
-        try:
-            subprocess.Popen([anydesk_exe])
-        except Exception as e:
-            QMessageBox.warning(self, "오류", f"AnyDesk 실행 실패: {e}")
-            return
-
-        # AnyDesk ID 가져오기 (명령줄)
-        anydesk_id = ""
-        try:
-            result = subprocess.run(
-                [anydesk_exe, "--get-id"],
-                capture_output=True, text=True, timeout=5,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-            anydesk_id = result.stdout.strip()
-        except Exception:
-            pass
-
-        if anydesk_id:
-            # 클립보드에 복사
-            from PyQt6.QtWidgets import QApplication
-            clipboard = QApplication.clipboard()
-            clipboard.setText(anydesk_id)
-
-            self._remote_status.setText(f"AnyDesk ID: {anydesk_id} (복사됨)")
+        if success and message and not message.startswith("AnyDesk가"):
+            self._remote_status.setText(f"AnyDesk ID: {message} (복사됨)")
             self._remote_status.setStyleSheet(
                 f"font-size: 12px; color: {_GREEN}; font-weight: 600; "
                 f"font-family: 'Malgun Gothic';"
             )
-
-            # 카카오톡 오픈채팅 안내
-            reply = QMessageBox.information(
-                self, "원격 지원 준비 완료",
-                f"AnyDesk ID: {anydesk_id}\n"
-                f"(클립보드에 복사되었습니다)\n\n"
-                f"카카오톡 오픈채팅방에 ID를 보내주세요.",
-                QMessageBox.StandardButton.Ok,
-            )
-
-            # TODO: 실제 오픈채팅방 링크로 교체
-            # webbrowser.open("https://open.kakao.com/o/xxxxx")
-        else:
-            self._remote_status.setText("AnyDesk가 실행되었습니다. ID를 확인해주세요.")
+        elif success:
+            self._remote_status.setText(message)
             self._remote_status.setStyleSheet(
                 f"font-size: 12px; color: {_BLUE}; font-family: 'Malgun Gothic';"
             )
