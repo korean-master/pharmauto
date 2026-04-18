@@ -1172,6 +1172,162 @@ DOM 뼈대:
 
         return login_success
 
+    # ────── 구조 진단 (DOM 분석 후 Supabase 업로드) ──────
+
+    _STRUCTURE_ANALYZER_JS = r"""
+    (() => {
+      const _tag = (el) => el ? `${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''}${el.className && typeof el.className === 'string' ? '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.') : ''}` : '';
+      const _cssPath = (el) => {
+        if (!el || !el.parentElement) return '';
+        const parts = [];
+        let cur = el;
+        while (cur && cur.nodeType === 1 && parts.length < 6) {
+          let seg = cur.tagName.toLowerCase();
+          if (cur.id) { seg += '#' + cur.id; parts.unshift(seg); break; }
+          if (cur.className && typeof cur.className === 'string') {
+            const cls = cur.className.trim().split(/\s+/).filter(c => c && !/^\d/.test(c))[0];
+            if (cls) seg += '.' + cls;
+          }
+          const idx = Array.from(cur.parentElement?.children || []).filter(c => c.tagName === cur.tagName).indexOf(cur);
+          if (idx >= 0) seg += `:nth-of-type(${idx + 1})`;
+          parts.unshift(seg);
+          cur = cur.parentElement;
+        }
+        return parts.join(' > ');
+      };
+      const report = { url: location.href, title: document.title, tables: [], buttons_with_text: [], inputs: [], images_likely_buttons: [], cart_indicators: [] };
+      document.querySelectorAll('table').forEach((tbl, ti) => {
+        const ths = Array.from(tbl.querySelectorAll('thead th, thead td')).map(h => h.textContent.trim().slice(0, 20));
+        const firstTh = ths.length ? ths : Array.from(tbl.querySelectorAll('tr:first-child th, tr:first-child td')).map(h => h.textContent.trim().slice(0, 20));
+        const bodyRows = tbl.querySelectorAll('tbody tr, tr');
+        const sampleRow = bodyRows[ths.length ? 0 : 1] || bodyRows[0];
+        const rowCells = sampleRow ? Array.from(sampleRow.querySelectorAll('td')).map(td => ({
+          text: td.textContent.trim().slice(0, 40),
+          inner_tags: Array.from(td.children).map(_tag).slice(0, 4),
+          has_input: !!td.querySelector('input'), has_img: !!td.querySelector('img'),
+          has_button: !!td.querySelector('button, a, [onclick]'),
+        })) : [];
+        report.tables.push({ idx: ti, css: _cssPath(tbl), headers: firstTh.slice(0, 20), row_count: bodyRows.length, first_row_cells: rowCells.slice(0, 20) });
+      });
+      const btnKeywords = ['담기', '장바구니', '추가', '구매', '주문'];
+      document.querySelectorAll('button, a, input[type="button"], input[type="submit"], input[type="image"], span[onclick], div[onclick]').forEach(el => {
+        const txt = (el.textContent || '').trim().slice(0, 30);
+        const val = el.value || '', alt = el.getAttribute('alt') || '', src = el.getAttribute('src') || '';
+        if (btnKeywords.find(k => txt.includes(k) || val.includes(k) || alt.includes(k))) {
+          report.buttons_with_text.push({
+            tag: el.tagName.toLowerCase(), type: el.getAttribute('type') || '',
+            text: txt, value: val, alt, src: src.slice(0, 80), css: _cssPath(el),
+            in_table_row: !!el.closest('tr'),
+            near_qty_input: !!el.closest('tr')?.querySelector('input[type="text"], input[type="number"]'),
+          });
+        }
+      });
+      report.buttons_with_text = report.buttons_with_text.slice(0, 30);
+      document.querySelectorAll('input[type="text"], input[type="number"]').forEach((inp, i) => {
+        if (i >= 10) return;
+        const row = inp.closest('tr');
+        report.inputs.push({
+          css: _cssPath(inp), name: inp.name || inp.id || '', placeholder: inp.placeholder || '',
+          in_row: !!row, row_idx: row ? Array.from(row.parentElement.children).indexOf(row) : -1,
+        });
+      });
+      document.querySelectorAll('input[type="image"], a > img, button > img, td:last-child img').forEach((el, i) => {
+        if (i >= 20) return;
+        const parent = el.closest('a, button, input');
+        report.images_likely_buttons.push({
+          tag: el.tagName.toLowerCase(), alt: el.getAttribute('alt') || '',
+          src: (el.getAttribute('src') || '').slice(0, 100),
+          parent_tag: parent ? parent.tagName.toLowerCase() : '',
+          css: _cssPath(el), in_row: !!el.closest('tr'),
+        });
+      });
+      const cartKw = ['장바구니', '카트', 'cart', '담긴', '선택'];
+      document.querySelectorAll('span, em, strong, b, div, td, a').forEach(el => {
+        const t = (el.textContent || '').trim();
+        if (t.length > 30 || t.length < 1) return;
+        if (cartKw.some(k => t.includes(k) || (el.className && el.className.includes && el.className.includes('cart')))) {
+          const nums = t.match(/(\d+)/);
+          if (nums) report.cart_indicators.push({ css: _cssPath(el), text: t.slice(0, 40), number: nums[1] });
+        }
+      });
+      report.cart_indicators = report.cart_indicators.slice(0, 15);
+      return report;
+    })()
+    """
+
+    async def analyze_structure(
+        self, headless: bool = True, probe_term: str = "타이레놀"
+    ) -> dict:
+        """도매상 주문 페이지 DOM 구조를 분석한다 (수동 셀렉터 주입 보조용).
+
+        흐름: 로그인 → (주문 페이지 이동) → 초기 캡처 → 검색 실행 → 결과 캡처.
+        캡처는 DOM의 핵심 단서(테이블 헤더/셀 구조, 담기 키워드 버튼, 수량 입력,
+        이미지 버튼, 장바구니 카운트 후보)만 수집해 민감정보를 제외한다.
+        """
+        result = {
+            "wid": self._wid,
+            "site_url": self.url,
+            "probe_term": probe_term,
+            "captures": [],
+            "selectors_snapshot": {
+                "search": self._selectors.get("search", {}),
+                "table": self._selectors.get("table", {}),
+            },
+        }
+        try:
+            await self._launch(headless=headless)
+            logged_in = await self.login_async(headless=headless)
+            if not logged_in:
+                result["error"] = "로그인 실패"
+                return result
+
+            self._progress("구조 진단: 초기 페이지 캡처...")
+            try:
+                cap1 = await self._page.evaluate(self._STRUCTURE_ANALYZER_JS)
+                result["captures"].append({"stage": "after_login", "data": cap1})
+            except Exception as e:
+                result["captures"].append({"stage": "after_login", "error": str(e)})
+
+            # 검색 실행 (search_input 있으면)
+            search = self._selectors.get("search", {})
+            search_input = search.get("search_input")
+            search_btn = search.get("search_btn")
+            if search_input:
+                try:
+                    self._progress(f"구조 진단: '{probe_term}' 검색...")
+                    await self._page.wait_for_selector(
+                        search_input, state="visible", timeout=8000
+                    )
+                    await self._page.fill(search_input, "")
+                    await self._page.wait_for_timeout(300)
+                    await self._page.fill(search_input, probe_term)
+                    await self._page.wait_for_timeout(300)
+                    if search_btn:
+                        try:
+                            await self._page.click(search_btn)
+                        except Exception:
+                            await self._page.press(search_input, "Enter")
+                    else:
+                        await self._page.press(search_input, "Enter")
+                    await self._page.wait_for_timeout(3500)
+                    cap2 = await self._page.evaluate(self._STRUCTURE_ANALYZER_JS)
+                    result["captures"].append({
+                        "stage": "after_search", "probe": probe_term, "data": cap2,
+                    })
+                except Exception as e:
+                    result["captures"].append({
+                        "stage": "after_search", "probe": probe_term, "error": str(e),
+                    })
+            else:
+                result["note"] = "search_input 셀렉터 없음 — 검색 단계 생략"
+
+            return result
+        finally:
+            try:
+                await self._close()
+            except Exception:
+                pass
+
     # ────── _get_cart_count 오버라이드 (셀렉터 주입 지원) ──────
 
     async def _get_cart_count(self) -> int:

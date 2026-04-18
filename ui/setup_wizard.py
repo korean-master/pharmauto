@@ -24,13 +24,17 @@ SETTINGS_PATH = os.path.join(CONFIG_DIR, "settings.json")
 # 약국 프로그램별 기본 DB명
 PHARMACY_PROGRAMS = {
     "epharm": {"label": "이팜 (EPHARM)", "db": "eP_PHARM", "driver": "SQL Server"},
-    "upharm": {"label": "유팜 (UPHARM)", "db": "UPHARM", "driver": "SQL Server"},
+    "upharm": {"label": "유팜 (UPHARM)", "db": "", "driver": "SQL Server"},
     "it3000": {"label": "IT3000", "db": "", "driver": "SQL Server"},
     "custom": {"label": "기타 (직접 입력)", "db": "", "driver": "SQL Server"},
 }
 
 # IT3000 DB명 후보 (정확한 DB명이 공개되지 않아 자동 탐색)
 IT3000_DB_HINTS = ["IT3000", "it3000", "InfoTech", "infotech", "PHARM", "pharm"]
+
+# 유팜 DB명 우선순위 — 실측 기반 (2026-04-18): atpharm 이 메인, upharmLog/Resources 는 보조
+# exact match 순서대로 시도 (Log/Resources 등 보조 DB 제외)
+UPHARM_DB_CANDIDATES = ["atpharm", "upharm", "UPHARM"]
 
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
@@ -60,19 +64,44 @@ class AutoSetupWorker(QThread):
     progress = pyqtSignal(int)  # 0~100
     finished = pyqtSignal(dict)  # {"success", "server", "database", "pharmacy_name", "error"}
 
-    def __init__(self, program_key: str):
+    def __init__(self, program_key: str, auth_info: dict | None = None):
         super().__init__()
         self._program = program_key
+        # auth_info: {"auth": "windows"|"sql", "username": str, "password": str (plain)}
+        self._auth_info = auth_info or {"auth": "windows"}
 
     def run(self):
         import pyodbc
+        from core.db_conn import build_conn_str
+        from core.crypto import encrypt
 
         _log(f"=== 설치 마법사 시작 (프로그램: {self._program}) ===")
+        auth_label = (
+            "SQL 인증" if self._auth_info.get("auth") == "sql" else "Windows 인증"
+        )
+        _log(f"  인증 방식: {auth_label}")
 
         info = PHARMACY_PROGRAMS[self._program]
         target_db = info["db"]
         driver = info["driver"]
         result = {"success": False, "server": "", "database": "", "pharmacy_name": "", "error": ""}
+
+        # SQL 인증 선택 시 자격증명 검증
+        if self._auth_info.get("auth") == "sql":
+            if not self._auth_info.get("username") or not self._auth_info.get("password"):
+                result["error"] = "SQL 인증 선택 시 사용자명과 비밀번호를 입력해야 합니다"
+                self.finished.emit(result)
+                return
+
+        # 공통 db 설정 — 서버는 각 인스턴스에서 교체됨
+        base_db = {
+            "driver": driver,
+            "auth": self._auth_info.get("auth", "windows"),
+            "username": self._auth_info.get("username", ""),
+            # 검색 단계에선 평문 비번을 그대로 사용 (암호화는 저장 직전)
+            "password": "",
+        }
+        plain_password = self._auth_info.get("password", "")
 
         # 1단계: SQL Server 인스턴스 탐색 (0~30%)
         self.progress.emit(10)
@@ -131,12 +160,10 @@ class AutoSetupWorker(QThread):
             self.progress.emit(pct)
 
             try:
-                conn_str = (
-                    f"DRIVER={{{driver}}};"
-                    f"SERVER={server};"
-                    f"Trusted_Connection=yes;"
-                    f"ApplicationIntent=ReadOnly;"
-                )
+                probe_db = dict(base_db)
+                probe_db["server"] = server
+                probe_db["password_plain"] = plain_password
+                conn_str = build_conn_str(probe_db, include_db=False)
                 conn = pyodbc.connect(conn_str, timeout=3, readonly=True)
                 cursor = conn.cursor()
                 cursor.execute(
@@ -149,10 +176,20 @@ class AutoSetupWorker(QThread):
                 _log(f"  서버 {server}: DB 목록 = {dbs}")
 
                 if target_db and target_db in dbs:
-                    # 이팜/유팜: 정확한 DB명 매칭
+                    # 이팜: 정확한 DB명 매칭
                     found_server = server
                     found_db = target_db
                     break
+                elif not target_db and self._program == "upharm":
+                    # 유팜: 후보 우선순위대로 exact(대소문자 무시) 매칭
+                    dbs_lower = {d.lower(): d for d in dbs}
+                    for cand in UPHARM_DB_CANDIDATES:
+                        if cand.lower() in dbs_lower:
+                            found_server = server
+                            found_db = dbs_lower[cand.lower()]
+                            break
+                    if found_server:
+                        break
                 elif not target_db and self._program == "it3000":
                     # IT3000: 힌트 기반 탐색
                     for db_name in dbs:
@@ -191,13 +228,11 @@ class AutoSetupWorker(QThread):
         _log("3단계: 약국명 조회")
         pharmacy_name = ""
         try:
-            conn_str = (
-                f"DRIVER={{{driver}}};"
-                f"SERVER={found_server};"
-                f"DATABASE={found_db};"
-                f"Trusted_Connection=yes;"
-                f"ApplicationIntent=ReadOnly;"
-            )
+            name_db = dict(base_db)
+            name_db["server"] = found_server
+            name_db["database"] = found_db
+            name_db["password_plain"] = plain_password
+            conn_str = build_conn_str(name_db)
             conn = pyodbc.connect(conn_str, timeout=3, readonly=True)
             cursor = conn.cursor()
 
@@ -231,6 +266,11 @@ class AutoSetupWorker(QThread):
         result["database"] = found_db
         result["pharmacy_name"] = pharmacy_name
         result["full_support"] = self._program == "epharm"
+        # 인증 정보 전달 (저장 단계에서 암호화)
+        result["auth"] = self._auth_info.get("auth", "windows")
+        result["username"] = self._auth_info.get("username", "")
+        # 저장 단계에서 DPAPI로 암호화할 평문 비번 (메모리 통해 전달)
+        result["_password_plain"] = plain_password
         self.finished.emit(result)
 
 
@@ -318,10 +358,61 @@ class SetupWizard(QDialog):
                 "QRadioButton { font-size: 14px; font-family: 'Malgun Gothic'; "
                 "padding: 8px 0; min-height: 20px; }"
             )
+            radio.toggled.connect(self._on_program_changed)
             self._prog_group.addButton(radio)
             self._prog_radios[key] = radio
             layout.addWidget(radio)
         self._prog_radios["epharm"].setChecked(True)
+
+        # SQL 인증 입력 영역 (유팜 선택 시 노출)
+        self._sql_auth_widget = QLabel()
+        self._sql_auth_widget.setVisible(False)
+        # 실제 입력 위젯을 위한 별도 컨테이너
+        from PyQt6.QtWidgets import QWidget, QGridLayout
+        self._sql_auth_container = QWidget()
+        sql_lay = QGridLayout(self._sql_auth_container)
+        sql_lay.setContentsMargins(20, 8, 0, 8)
+        sql_lay.setHorizontalSpacing(10)
+        sql_lay.setVerticalSpacing(8)
+        sql_info = QLabel(
+            "유팜은 SQL 서버 계정으로 접속해야 합니다.\n"
+            "개발자가 단일 사용자 모드로 생성한 읽기전용 계정을 입력하세요."
+        )
+        sql_info.setWordWrap(True)
+        sql_info.setStyleSheet(
+            "font-size: 12px; color: #4B5563; "
+            "font-family: 'Malgun Gothic'; padding: 6px 10px; "
+            "background: #F9FAFB; border-radius: 6px;"
+        )
+        sql_lay.addWidget(sql_info, 0, 0, 1, 2)
+
+        id_label = QLabel("SQL ID:")
+        id_label.setStyleSheet("font-size: 12px; font-family: 'Malgun Gothic';")
+        self._sql_username = QLineEdit()
+        self._sql_username.setPlaceholderText("예: pharmauto_ro")
+        self._sql_username.setStyleSheet(
+            "QLineEdit { font-size: 12px; padding: 6px 10px; "
+            "border: 1px solid #DDD; border-radius: 6px; "
+            "font-family: 'Malgun Gothic'; }"
+        )
+        sql_lay.addWidget(id_label, 1, 0)
+        sql_lay.addWidget(self._sql_username, 1, 1)
+
+        pw_label = QLabel("SQL PW:")
+        pw_label.setStyleSheet("font-size: 12px; font-family: 'Malgun Gothic';")
+        self._sql_password = QLineEdit()
+        self._sql_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self._sql_password.setPlaceholderText("SQL 계정 비밀번호")
+        self._sql_password.setStyleSheet(
+            "QLineEdit { font-size: 12px; padding: 6px 10px; "
+            "border: 1px solid #DDD; border-radius: 6px; "
+            "font-family: 'Malgun Gothic'; }"
+        )
+        sql_lay.addWidget(pw_label, 2, 0)
+        sql_lay.addWidget(self._sql_password, 2, 1)
+
+        self._sql_auth_container.setVisible(False)
+        layout.addWidget(self._sql_auth_container)
 
         layout.addStretch()
 
@@ -370,11 +461,38 @@ class SetupWizard(QDialog):
                 return key
         return "epharm"
 
+    def _on_program_changed(self):
+        """유팜 선택 시 SQL 인증 입력 필드를 표시한다."""
+        is_upharm = self._prog_radios.get("upharm") and self._prog_radios["upharm"].isChecked()
+        if hasattr(self, "_sql_auth_container"):
+            self._sql_auth_container.setVisible(bool(is_upharm))
+            self.adjustSize()
+
     def _on_start(self):
+        prog = self._selected_program()
+        auth_info = {"auth": "windows"}
+
+        if prog == "upharm":
+            username = self._sql_username.text().strip()
+            password = self._sql_password.text()
+            if not username or not password:
+                QMessageBox.warning(
+                    self, "입력 필요",
+                    "유팜은 SQL 인증이 필요합니다.\n"
+                    "SQL ID와 비밀번호를 모두 입력해주세요."
+                )
+                return
+            auth_info = {
+                "auth": "sql", "username": username, "password": password,
+            }
+
         # UI 잠금
         self._start_btn.setEnabled(False)
         for radio in self._prog_radios.values():
             radio.setEnabled(False)
+        if hasattr(self, "_sql_username"):
+            self._sql_username.setEnabled(False)
+            self._sql_password.setEnabled(False)
 
         self._progress_bar.setVisible(True)
         self._progress_bar.setValue(0)
@@ -382,7 +500,7 @@ class SetupWizard(QDialog):
         self._status.setText("설정 중...")
 
         # 백그라운드 자동 세팅
-        self._worker = AutoSetupWorker(self._selected_program())
+        self._worker = AutoSetupWorker(prog, auth_info=auth_info)
         self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_finished)
         self._worker.start()
@@ -541,11 +659,19 @@ class SetupWizard(QDialog):
                 pass
 
         prog = self._selected_program()
-        settings["db"] = {
+        db_conf = {
             "server": result["server"],
             "database": result["database"],
             "driver": PHARMACY_PROGRAMS[prog]["driver"],
         }
+        # SQL 인증이면 자격증명 암호화 저장
+        if result.get("auth") == "sql":
+            from core.crypto import encrypt
+            db_conf["auth"] = "sql"
+            db_conf["username"] = result.get("username", "")
+            plain = result.get("_password_plain", "")
+            db_conf["password"] = encrypt(plain) if plain else ""
+        settings["db"] = db_conf
         settings["pharmacy_program"] = prog
         if result["pharmacy_name"]:
             settings["pharmacy_name"] = result["pharmacy_name"]

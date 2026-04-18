@@ -535,3 +535,45 @@ def _background_sync():
         print("[클라우드] 동기화 완료")
     except Exception as e:
         print(f"[클라우드] 동기화 실패: {e}")
+
+
+# ────────────────────── 구조 진단 업로드 ──────────────────────
+
+def upload_structure_analysis(
+    wid: str, name: str, url: str, analysis: dict
+) -> bool:
+    """도매상 주문 페이지 DOM 구조 진단 결과를 error_logs에 업로드한다.
+
+    Claude가 Supabase에서 읽어 수동 셀렉터 주입에 활용한다.
+    """
+    if not is_enabled():
+        return False
+    try:
+        from core.version import VERSION
+        pharmacy_code = ""
+        try:
+            from core.auth import get_activation_code
+            pharmacy_code = get_activation_code() or ""
+        except Exception:
+            pass
+
+        analysis_json = json.dumps(analysis, ensure_ascii=False)
+        # log_tail 컬럼이 큰 JSON 받도록 제한을 넉넉히 (30k char)
+        payload = {
+            "pharmacy_code": pharmacy_code,
+            "version": VERSION,
+            "level": "STRUCTURE_ANALYSIS",
+            "message": f"{name} ({wid}) 구조 진단",
+            "context": {"wid": wid, "name": name, "url": url},
+            "log_tail": analysis_json[:30000],
+        }
+        r = requests.post(
+            _api_url("error_logs"),
+            headers=_headers(),
+            json=payload,
+            timeout=15,
+        )
+        return 200 <= r.status_code < 300
+    except Exception as e:
+        print(f"[구조 진단] 업로드 실패: {e}")
+        return False

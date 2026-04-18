@@ -122,9 +122,9 @@ class SettingsTab(QWidget):
         ws_lay.addWidget(ws_title)
 
         self.ws_table = QTableWidget()
-        self.ws_table.setColumnCount(8)
+        self.ws_table.setColumnCount(9)
         self.ws_table.setHorizontalHeaderLabels([
-            "도매상명", "URL", "ID", "PW", "우선순위", "상태", "", "",
+            "도매상명", "URL", "ID", "PW", "우선순위", "상태", "", "", "",
         ])
         self.ws_table.verticalHeader().setVisible(False)
         self.ws_table.setShowGrid(False)
@@ -138,6 +138,7 @@ class SettingsTab(QWidget):
         ws_hdr.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
         ws_hdr.setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
         ws_hdr.setSectionResizeMode(7, QHeaderView.ResizeMode.Fixed)
+        ws_hdr.setSectionResizeMode(8, QHeaderView.ResizeMode.Fixed)
         self.ws_table.setColumnWidth(0, 100)
         self.ws_table.setColumnWidth(2, 100)
         self.ws_table.setColumnWidth(3, 100)
@@ -145,6 +146,7 @@ class SettingsTab(QWidget):
         self.ws_table.setColumnWidth(5, 200)
         self.ws_table.setColumnWidth(6, 70)
         self.ws_table.setColumnWidth(7, 70)
+        self.ws_table.setColumnWidth(8, 80)
         self.ws_table.setStyleSheet(
             "QTableWidget { font-family: 'Malgun Gothic'; font-size: 13px; }"
         )
@@ -663,29 +665,29 @@ class SettingsTab(QWidget):
     def _save_db_settings(self):
         settings = _load_json("settings.json")
         settings["pharmacy_name"] = self.pharmacy_name_input.text().strip()
-        settings["db"] = {
-            "server": self.db_server_input.text().strip() or "localhost",
-            "database": self.db_name_input.text().strip() or "eP_PHARM",
-            "driver": self.db_driver_input.text().strip() or "SQL Server",
-        }
+        # 기존 db 설정(특히 auth/username/password)을 보존하면서 서버/DB/드라이버만 업데이트
+        db = dict(settings.get("db", {}))
+        db["server"] = self.db_server_input.text().strip() or db.get("server") or "localhost"
+        db["database"] = self.db_name_input.text().strip() or db.get("database") or "eP_PHARM"
+        db["driver"] = self.db_driver_input.text().strip() or db.get("driver") or "SQL Server"
+        settings["db"] = db
         _save_json("settings.json", settings)
-        QMessageBox.information(self, "저장", "이팜 연결 설정이 저장되었습니다.")
+        QMessageBox.information(self, "저장", "약국 연결 설정이 저장되었습니다.")
 
     def _test_db_connection(self):
         self.db_status_label.setText("연결 테스트 중...")
         self.db_status_label.setStyleSheet(DESCRIPTION)
         try:
             import pyodbc
-            driver = self.db_driver_input.text().strip() or "SQL Server"
-            server = self.db_server_input.text().strip() or "localhost"
-            database = self.db_name_input.text().strip() or "eP_PHARM"
-            conn_str = (
-                f"DRIVER={{{driver}}};"
-                f"SERVER={server};"
-                f"DATABASE={database};"
-                f"Trusted_Connection=yes;"
-                f"ApplicationIntent=ReadOnly;"
-            )
+            from core.db_conn import build_conn_str
+            settings = _load_json("settings.json")
+            db = settings.get("db", {})
+            # UI 에서 편집한 값이 있으면 반영 (현재는 서버/DB/드라이버만 편집 가능)
+            db = dict(db)
+            db["server"] = self.db_server_input.text().strip() or db.get("server") or "localhost"
+            db["database"] = self.db_name_input.text().strip() or db.get("database") or "eP_PHARM"
+            db["driver"] = self.db_driver_input.text().strip() or db.get("driver") or "SQL Server"
+            conn_str = build_conn_str(db)
             conn = pyodbc.connect(conn_str, timeout=3, readonly=True)
             conn.close()
             self.db_status_label.setText("연결 성공!")
@@ -746,6 +748,18 @@ class SettingsTab(QWidget):
         del_btn.setStyleSheet(btn_small_danger())
         del_btn.clicked.connect(lambda _, r=row: self._del_wholesaler_row(r))
         self.ws_table.setCellWidget(row, 7, del_btn)
+
+        # 구조 진단 버튼 (수동 셀렉터 주입 보조용)
+        diag_btn = QPushButton("진단")
+        diag_btn.setToolTip(
+            "도매상 주문 페이지 DOM 구조를 서버에 업로드합니다. "
+            "연동 오류 시 개발자가 분석할 수 있도록 도움을 줍니다."
+        )
+        diag_btn.setStyleSheet(btn_small_primary())
+        diag_btn.clicked.connect(
+            lambda _, r=row, w=wid, d=data: self._run_ws_structure_analysis(r, w, d)
+        )
+        self.ws_table.setCellWidget(row, 8, diag_btn)
 
         self.ws_table.setRowHeight(row, self._WS_ROW_HEIGHT)
 
@@ -1275,9 +1289,115 @@ class SettingsTab(QWidget):
         del_btn.clicked.connect(lambda _, r=row: self._del_wholesaler_row(r))
         self.ws_table.setCellWidget(row, 7, del_btn)
 
+        diag_btn = QPushButton("진단")
+        diag_btn.setToolTip(
+            "도매상 주문 페이지 DOM 구조를 서버에 업로드합니다."
+        )
+        diag_btn.setStyleSheet(btn_small_primary())
+        diag_btn.clicked.connect(
+            lambda _, r=row, w=wid, d=data: self._run_ws_structure_analysis(r, w, d)
+        )
+        self.ws_table.setCellWidget(row, 8, diag_btn)
+
         self.ws_table.setRowHeight(row, self._WS_ROW_HEIGHT)
 
         self._notify_wholesaler_changed()
+
+    def _run_ws_structure_analysis(self, row: int, wid: str, data: dict):
+        """해당 도매상의 주문 페이지 DOM 구조를 분석해 서버(error_logs)에 업로드한다.
+
+        수동 셀렉터 주입을 위한 사전 진단용. 헤드리스 브라우저로 로그인→검색→캡처.
+        """
+        from PyQt6.QtWidgets import QMessageBox
+        from PyQt6.QtCore import QThread, pyqtSignal
+
+        if not data.get("id") or not data.get("pw") or not data.get("url"):
+            QMessageBox.warning(
+                self, "구조 진단", "ID/PW/URL 먼저 설정한 뒤 다시 시도하세요."
+            )
+            return
+
+        status_item = self.ws_table.item(row, 5)
+        prev_text = status_item.text() if status_item else ""
+
+        if status_item:
+            status_item.setText("구조 진단 중...")
+            status_item.setForeground(Qt.GlobalColor.blue)
+
+        class _DiagThread(QThread):
+            done = pyqtSignal(int, bool, str)  # row, success, message
+
+            def __init__(self, row, wid, data):
+                super().__init__()
+                self._row = row
+                self._wid = wid
+                self._data = data
+
+            def run(self):
+                import asyncio
+                try:
+                    from core.crypto import decrypt_dict_fields
+                    config = decrypt_dict_fields(dict(self._data), ["id", "pw"])
+                    config["_wid"] = self._wid
+                    from core.order_engine import _get_wholesaler_class
+                    ws_class = _get_wholesaler_class(
+                        self._wid, url=config.get("url", "")
+                    )
+                    if ws_class is None:
+                        from wholesalers.generic import GenericWholesaler
+                        ws_class = GenericWholesaler
+                    # 전용 클래스여도 analyze_structure는 GenericWholesaler 것만 사용
+                    from wholesalers.generic import GenericWholesaler
+                    ws = GenericWholesaler(config)
+                    result = asyncio.run(ws.analyze_structure(headless=True))
+
+                    from core.cloud import upload_structure_analysis
+                    ok = upload_structure_analysis(
+                        self._wid, config.get("name", self._wid),
+                        config.get("url", ""), result
+                    )
+                    if ok:
+                        # 업로드 성공 → 로컬 셀렉터 캐시 삭제
+                        # (개발자가 Supabase 고친 후 다음 연동 테스트에서 자동 재fetch)
+                        try:
+                            from core.selector_store import delete_selectors
+                            delete_selectors(self._wid)
+                        except Exception:
+                            pass
+                        self.done.emit(
+                            self._row, True,
+                            "구조 진단 업로드 완료\n\n"
+                            "로컬 셀렉터 캐시도 초기화됐습니다.\n"
+                            "개발자가 서버 셀렉터를 수정한 뒤 연동 테스트를 "
+                            "다시 누르면 새 셀렉터가 자동으로 적용됩니다."
+                        )
+                    else:
+                        self.done.emit(
+                            self._row, False,
+                            "분석은 완료됐으나 서버 업로드 실패 (네트워크 확인)"
+                        )
+                except Exception as e:
+                    self.done.emit(self._row, False, f"오류: {e}")
+
+        def _on_done(r, success, msg):
+            if status_item:
+                status_item.setText(prev_text)
+                status_item.setForeground(
+                    self._STATUS_COLORS.get(prev_text, Qt.GlobalColor.black)
+                )
+            if success:
+                QMessageBox.information(self, "구조 진단", msg)
+            else:
+                QMessageBox.warning(self, "구조 진단", msg)
+
+        t = _DiagThread(row, wid, data)
+        t.done.connect(_on_done)
+        t.finished.connect(t.deleteLater)
+        t.start()
+        # GC 방지
+        if not hasattr(self, "_diag_threads"):
+            self._diag_threads = []
+        self._diag_threads.append(t)
 
     def _edit_ws_row(self, row: int):
         """기존 행을 인라인 편집 모드로 전환한다."""

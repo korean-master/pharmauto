@@ -490,13 +490,8 @@ def _db_connection_broken() -> bool:
         if not db.get("server"):
             return True
         import pyodbc
-        conn_str = (
-            f"DRIVER={{{db.get('driver', 'SQL Server')}}};"
-            f"SERVER={db['server']};"
-            f"DATABASE={db.get('database', 'eP_PHARM')};"
-            f"Trusted_Connection=yes;"
-            f"ApplicationIntent=ReadOnly;"
-        )
+        from core.db_conn import build_conn_str
+        conn_str = build_conn_str(db)
         conn = pyodbc.connect(conn_str, timeout=3, readonly=True)
         conn.close()
         return False

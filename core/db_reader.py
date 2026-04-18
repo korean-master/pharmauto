@@ -40,18 +40,18 @@ def get_connection():
 
     settings = _load_settings()
     db = settings.get("db", {})
-    server = db.get("server", "localhost")
-    database = db.get("database", "eP_PHARM")
-    driver = db.get("driver", "SQL Server")
+    # 기본값 보장
+    db.setdefault("server", "localhost")
+    db.setdefault("database", "eP_PHARM")
+    db.setdefault("driver", "SQL Server")
 
-    conn_str = (
-        f"DRIVER={{{driver}}};"
-        f"SERVER={server};"
-        f"DATABASE={database};"
-        f"Trusted_Connection=yes;"
-        f"ApplicationIntent=ReadOnly;"
+    from core.db_conn import build_conn_str
+    conn_str = build_conn_str(db)
+    auth_label = "SQL 인증" if (db.get("auth") or "windows").lower() == "sql" else "Windows 인증"
+    print(
+        f"[DB] 연결: {db['server']}/{db['database']} "
+        f"({auth_label}, 읽기전용)"
     )
-    print(f"[DB] 연결: {server}/{database} (읽기전용)")
     try:
         _conn_cache = pyodbc.connect(conn_str, timeout=5, readonly=True)
         return _conn_cache
