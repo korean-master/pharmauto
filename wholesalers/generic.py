@@ -1475,6 +1475,36 @@ DOM 뼈대:
         finally:
             await self._close()
 
+    async def _row_has_order_button(
+        self, row, cart_btn_sel: str | None,
+        cart_in_row: bool, chk_sel: str | None,
+    ) -> bool:
+        """행에 주문 가능한 인터랙션(담기 버튼 or 체크박스)이 있는지 확인.
+
+        검색 결과 행은 담기 버튼/체크박스가 있고, 장바구니/헤더/광고 행은 없다.
+        세화처럼 같은 페이지에 장바구니 테이블이 공존하는 사이트에서 잘못된 행
+        선택을 방지한다. 관련 셀렉터가 전혀 없으면 하위 호환 위해 True 반환.
+        """
+        has_sel = (cart_in_row and cart_btn_sel) or chk_sel
+        if not has_sel:
+            return True
+
+        if cart_in_row and cart_btn_sel:
+            try:
+                if await row.query_selector(cart_btn_sel):
+                    return True
+            except Exception:
+                pass
+
+        if chk_sel:
+            try:
+                if await row.query_selector(chk_sel):
+                    return True
+            except Exception:
+                pass
+
+        return False
+
     async def _add_item_to_cart(self, insurance_code: str, quantity: int,
                                 idx: int, total: int,
                                 preferred_unit: int | None = None) -> dict:
@@ -1591,6 +1621,9 @@ DOM 뼈대:
 
             rows = await page.query_selector_all(row_sel)
             # 행이 있고, 실제 데이터가 있는지 확인
+            _cart_btn_sel_pre = table.get("cart_btn")
+            _cart_in_row_pre = table.get("cart_btn_in_row", False)
+            _chk_sel_pre = table.get("row_checkbox")
             valid_rows = []
             for r in rows:
                 tds = await r.query_selector_all('td')
@@ -1602,8 +1635,14 @@ DOM 뼈대:
                     t = (await td.inner_text()).strip()
                     if t and len(t) > 0:
                         filled += 1
-                if filled >= 3:
-                    valid_rows.append(r)
+                if filled < 3:
+                    continue
+                # 주문 가능 행만 (장바구니/공지 행 배제) — 셀렉터 있을 때만 동작
+                if not await self._row_has_order_button(
+                    r, _cart_btn_sel_pre, _cart_in_row_pre, _chk_sel_pre
+                ):
+                    continue
+                valid_rows.append(r)
 
             if valid_rows:
                 rows = valid_rows
@@ -1662,12 +1701,19 @@ DOM 뼈대:
         qty_input_sel = table.get("qty_input")
         cart_btn_sel = table.get("cart_btn")
         cart_in_row = table.get("cart_btn_in_row", False)
+        chk_sel = table.get("row_checkbox")
 
         # 각 행에서 candidates 수집
         candidates = []
         for row in rows:
             cells = await row.query_selector_all('td')
             if not cells:
+                continue
+
+            # 주문 가능 행만 (장바구니/공지 행 배제)
+            if not await self._row_has_order_button(
+                row, cart_btn_sel, cart_in_row, chk_sel
+            ):
                 continue
 
             # 보험코드 확인 (해당 약품 행인지)
