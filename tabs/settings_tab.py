@@ -2293,35 +2293,43 @@ class SettingsTab(QWidget):
     def _on_export_db_structure(self):
         settings = _load_json("settings.json")
         db = settings.get("db", {})
-        server = db.get("server", "")
-        database = db.get("database", "")
         program = settings.get("pharmacy_program", "unknown")
 
-        if not server or not database:
+        if not db.get("server") or not db.get("database"):
             QMessageBox.warning(self, "알림", "DB 연결 정보가 없습니다. 초기 설정을 먼저 진행하세요.")
             return
 
         try:
             from core.db_inspector import export_structure
-            path = export_structure(server, database, program)
+            path, uploaded = export_structure(db, program)
 
-            self._inspect_status.setText(f"저장 완료: {os.path.basename(path)}")
+            status_text = (
+                "서버 업로드 완료" if uploaded
+                else "로컬 저장만 완료 (서버 업로드 실패)"
+            )
+            self._inspect_status.setText(status_text)
             self._inspect_status.setStyleSheet(
-                f"font-size: 12px; color: {_GREEN}; font-weight: 600; "
-                f"font-family: 'Malgun Gothic';"
+                f"font-size: 12px; color: {_GREEN if uploaded else _RED}; "
+                f"font-weight: 600; font-family: 'Malgun Gothic';"
             )
 
-            # 파일 위치 열기
-            import subprocess
-            subprocess.Popen(["explorer", "/select,", os.path.abspath(path)])
-
-            QMessageBox.information(
-                self, "내보내기 완료",
-                f"DB 구조가 저장되었습니다.\n\n"
-                f"파일: {os.path.basename(path)}\n\n"
-                f"이 파일을 개발자에게 보내주세요.\n"
-                f"(환자 정보 등 개인정보는 포함되지 않습니다)"
-            )
+            if uploaded:
+                QMessageBox.information(
+                    self, "내보내기 완료",
+                    "DB 구조를 서버에 업로드했습니다.\n\n"
+                    "개발자가 바로 확인해서 연동 작업을 진행합니다.\n"
+                    "(환자 정보 등 개인정보는 포함되지 않습니다)"
+                )
+            else:
+                QMessageBox.warning(
+                    self, "서버 업로드 실패",
+                    f"로컬에만 저장되었습니다.\n\n"
+                    f"파일: {os.path.basename(path)}\n\n"
+                    f"네트워크 확인 후 다시 시도하거나,\n"
+                    f"이 파일을 개발자에게 직접 전달해주세요."
+                )
+                import subprocess
+                subprocess.Popen(["explorer", "/select,", os.path.abspath(path)])
         except Exception as e:
             self._inspect_status.setText(f"실패: {e}")
             self._inspect_status.setStyleSheet(

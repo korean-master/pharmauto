@@ -1,12 +1,11 @@
 """DB 구조 자동 수집 — 신규 약국 프로그램 연동용.
 
 베타 테스터 PC에서 실행하면 DB 테이블/컬럼 구조를 JSON으로 추출한다.
-이 파일을 개발자에게 보내면 해당 약국 프로그램 연동을 구현할 수 있다.
+생성된 JSON은 로컬 파일로도 저장되고 Supabase `error_logs` 테이블에도
+`level=DB_SCHEMA_EXPORT` 로 업로드되어 개발자가 바로 분석할 수 있다.
 
 사용법:
   설정 탭 → "DB 구조 내보내기" 버튼
-  → db_structure_{프로그램명}.json 파일 생성
-  → 이 파일을 개발자에게 전달
 """
 
 import json
@@ -16,28 +15,30 @@ from datetime import datetime
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 
 
-def inspect_database(server: str, database: str, driver: str = "SQL Server") -> dict:
+def inspect_database(db: dict) -> dict:
     """DB의 테이블/컬럼 구조를 읽기 전용으로 수집한다.
 
     개인정보(환자명, 주민번호 등)는 수집하지 않는다.
     테이블명, 컬럼명, 데이터 타입, 행 수만 수집한다.
+
+    Args:
+        db: settings.json의 db 섹션 (server, database, driver, auth 등)
     """
     import pyodbc
+    from core.db_conn import build_conn_str
+
+    server = db.get("server", "")
+    database = db.get("database", "")
 
     result = {
         "collected_at": datetime.now().isoformat(),
         "server": server,
         "database": database,
+        "auth": (db.get("auth") or "windows").lower(),
         "tables": [],
     }
 
-    conn_str = (
-        f"DRIVER={{{driver}}};"
-        f"SERVER={server};"
-        f"DATABASE={database};"
-        f"Trusted_Connection=yes;"
-        f"ApplicationIntent=ReadOnly;"
-    )
+    conn_str = build_conn_str(db)
 
     try:
         conn = pyodbc.connect(conn_str, timeout=5, readonly=True)
@@ -58,7 +59,6 @@ def inspect_database(server: str, database: str, driver: str = "SQL Server") -> 
         tables = cursor.fetchall()
 
         for table_name, row_count in tables:
-            # 각 테이블의 컬럼 정보
             cursor.execute("""
                 SELECT COLUMN_NAME, DATA_TYPE,
                        CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE
@@ -75,8 +75,6 @@ def inspect_database(server: str, database: str, driver: str = "SQL Server") -> 
                     "nullable": nullable,
                 })
 
-            # 샘플 데이터 (컬럼명만 확인용, 개인정보 제외)
-            # 처방/출고 관련 테이블의 컬럼명 패턴 확인에 사용
             sample_columns = [c["name"] for c in columns]
 
             result["tables"].append({
@@ -96,14 +94,13 @@ def inspect_database(server: str, database: str, driver: str = "SQL Server") -> 
     return result
 
 
-def export_structure(server: str, database: str, program_name: str,
-                     driver: str = "SQL Server") -> str:
-    """DB 구조를 JSON 파일로 내보낸다.
+def export_structure(db: dict, program_name: str) -> tuple[str, bool]:
+    """DB 구조를 수집해 로컬 JSON 저장 + Supabase 업로드.
 
     Returns:
-        저장된 파일 경로
+        (저장된 로컬 파일 경로, 서버 업로드 성공 여부)
     """
-    structure = inspect_database(server, database, driver)
+    structure = inspect_database(db)
     structure["program"] = program_name
 
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -113,4 +110,51 @@ def export_structure(server: str, database: str, program_name: str,
     with open(path, "w", encoding="utf-8") as f:
         json.dump(structure, f, ensure_ascii=False, indent=2)
 
-    return path
+    # Supabase 업로드 (개발자 즉시 분석 가능하도록)
+    uploaded = _upload_to_supabase(structure, program_name)
+
+    return path, uploaded
+
+
+def _upload_to_supabase(structure: dict, program_name: str) -> bool:
+    """error_logs 테이블에 level=DB_SCHEMA_EXPORT 로 업로드."""
+    try:
+        from core.cloud import is_enabled, _api_url, _headers
+        from core.version import VERSION
+        import requests
+
+        if not is_enabled():
+            return False
+
+        pharmacy_code = ""
+        try:
+            from core.auth import get_activation_code
+            pharmacy_code = get_activation_code() or ""
+        except Exception:
+            pass
+
+        schema_json = json.dumps(structure, ensure_ascii=False)
+        payload = {
+            "pharmacy_code": pharmacy_code,
+            "version": VERSION,
+            "level": "DB_SCHEMA_EXPORT",
+            "message": f"{program_name} DB 구조 내보내기 "
+                       f"({structure.get('table_count', 0)}개 테이블)",
+            "context": {
+                "program": program_name,
+                "database": structure.get("database", ""),
+                "auth": structure.get("auth", "windows"),
+                "error": structure.get("error", ""),
+            },
+            "log_tail": schema_json[:30000],
+        }
+        r = requests.post(
+            _api_url("error_logs"),
+            headers=_headers(),
+            json=payload,
+            timeout=15,
+        )
+        return 200 <= r.status_code < 300
+    except Exception as e:
+        print(f"[DB 구조] 업로드 실패: {e}")
+        return False
