@@ -236,18 +236,14 @@ def place_orders(order_items: list[dict], progress_callback=None,
             f.get("insurance_code", "") for f in failed
         )
 
-        # ws_results에서 품절/미확인 여부 확인
+        # ws_results에서 품절 여부 확인
         oos_codes = set()
-        unverified_codes = set()
         for r in ws_results:
             code = r.get("insurance_code")
             if not code:
                 continue
             if r.get("out_of_stock"):
                 oos_codes.add(code)
-            # 담기 카운트 검증 못한 미확인 건 — 실제 담김 보장 없음
-            if r.get("success") and r.get("unverified"):
-                unverified_codes.add(code)
 
         success_items = [
             it for it in items
@@ -263,25 +259,9 @@ def place_orders(order_items: list[dict], progress_callback=None,
         ]
 
         if success:
-            # 담김 검증된 건 vs 미확인 건 분리 저장
-            verified_items = [
-                it for it in success_items
-                if it.get("insurance_code", "") not in unverified_codes
-            ]
-            unverified_items = [
-                it for it in success_items
-                if it.get("insurance_code", "") in unverified_codes
-            ]
-            if dry_run:
-                if verified_items:
-                    _save_order_history(verified_items, wid, ws_name, status="cart_only")
-                if unverified_items:
-                    _save_order_history(unverified_items, wid, ws_name, status="cart_unverified")
-            else:
-                if verified_items:
-                    _save_order_history(verified_items, wid, ws_name, status="ordered")
-                if unverified_items:
-                    _save_order_history(unverified_items, wid, ws_name, status="ordered_unverified")
+            ok_status = "cart_only" if dry_run else "ordered"
+            if success_items:
+                _save_order_history(success_items, wid, ws_name, status=ok_status)
 
         # 실패한 아이템 이력 기록 — 품절은 out_of_stock, 나머지는 failed
         if failed_items_detail:

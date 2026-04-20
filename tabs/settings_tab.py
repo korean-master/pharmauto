@@ -977,8 +977,24 @@ class SettingsTab(QWidget):
                                 asyncio.run(ws_analyze.analyze_site(headless=True))
 
                         # 연동 테스트 실행
+                        # v1.5.39: generic 도매상은 full_onboard 로 셀렉터 자동 확정까지 수행
                         ws_test = ws_class(config)
-                        result = asyncio.run(ws_test.test_connection(headless=True))
+                        if is_generic:
+                            self._write_log("  자동 온보딩(full_onboard) 실행 중...")
+                            result = asyncio.run(ws_test.full_onboard(headless=True))
+                            if not result.get("success"):
+                                # 실패 시 상세 로그를 서버에 자동 업로드 (개발자가 즉시 확인)
+                                try:
+                                    from core.cloud import upload_onboard_failure
+                                    upload_onboard_failure(
+                                        self._wid, config.get("name", self._wid),
+                                        config.get("url", ""), result,
+                                    )
+                                    self._write_log("  실패 로그 서버 업로드 완료 (개발자 확인 예정)")
+                                except Exception as _e:
+                                    self._write_log(f"  실패 로그 업로드 오류: {_e}")
+                        else:
+                            result = asyncio.run(ws_test.test_connection(headless=True))
 
                         if result["success"]:
                             last_status = "정상"

@@ -566,3 +566,52 @@ def upload_structure_analysis(
     except Exception as e:
         print(f"[구조 진단] 업로드 실패: {e}")
         return False
+
+
+def upload_onboard_failure(
+    wid: str, name: str, url: str, report: dict
+) -> bool:
+    """자동 온보딩(full_onboard) 실패 시 상세 로그를 error_logs 에 업로드.
+
+    개발자가 Supabase 대시보드에서 level=ONBOARDING_FAIL 로 필터해 즉시
+    확인 가능. onboard_log 에 시도한 후보/DOM 스냅샷/스테이지별 결과 등
+    셀렉터 제작에 필요한 모든 정보 포함.
+    """
+    if not is_enabled():
+        return False
+    try:
+        from core.version import VERSION
+        pharmacy_code = ""
+        try:
+            from core.auth import get_activation_code
+            pharmacy_code = get_activation_code() or ""
+        except Exception:
+            pass
+
+        log_json = json.dumps(
+            report.get("onboard_log", {}), ensure_ascii=False
+        )[:500000]
+        payload = {
+            "pharmacy_code": pharmacy_code,
+            "version": VERSION,
+            "level": "ONBOARDING_FAIL",
+            "message": (
+                f"{name} ({wid}) 자동 온보딩 실패 — "
+                f"stage={report.get('stage','?')}: {report.get('message','')[:150]}"
+            ),
+            "context": {
+                "wid": wid, "name": name, "url": url,
+                "stage": report.get("stage", ""),
+            },
+            "log_tail": log_json,
+        }
+        r = requests.post(
+            _api_url("error_logs"),
+            headers=_headers(),
+            json=payload,
+            timeout=15,
+        )
+        return 200 <= r.status_code < 300
+    except Exception as e:
+        print(f"[온보딩 실패] 업로드 오류: {e}")
+        return False

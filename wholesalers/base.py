@@ -256,8 +256,9 @@ class WholesalerBase(ABC):
 
                 preferred = item.get("preferred_unit") or get_preferred_unit(code)
 
-                # 장바구니 담기 전 카운트
-                cart_before = await self._get_cart_count()
+                # 장바구니 담기 전: DOM 스냅샷 + (폴백용) 카운트
+                cart_before_snapshot = await self._snapshot_tables()
+                cart_before_count = await self._get_cart_count()
 
                 try:
                     result = await self._add_item_to_cart(
@@ -272,9 +273,8 @@ class WholesalerBase(ABC):
                         "drug_name": "",
                     }
 
-                # 3단계 검증: 1) _add_item_to_cart 자체 판단
+                # 1) 팝업/에러 메시지 감지
                 if result["success"]:
-                    # 2) 팝업/에러 메시지 감지
                     fail_reason, is_oos = await self._detect_cart_failure()
                     if fail_reason:
                         result["success"] = False
@@ -282,25 +282,37 @@ class WholesalerBase(ABC):
                         if is_oos:
                             result["out_of_stock"] = True
 
+                # 2) DOM diff 로 실제 담김 검증 (성공/실패 이분화)
                 if result["success"]:
-                    # 3) 장바구니 카운트 변화 확인
-                    await self._page.wait_for_timeout(500)
-                    cart_after = await self._get_cart_count()
-                    if cart_before >= 0 and cart_after >= 0:
-                        if cart_after <= cart_before:
-                            result["success"] = False
-                            result["message"] = "장바구니에 추가되지 않음 (품절 가능)"
-                            result["out_of_stock"] = True
+                    await self._page.wait_for_timeout(700)
+                    verify = await self._verify_cart_added(
+                        drug_name=result.get("drug_name", "") or "",
+                        insurance_code=code,
+                        before=cart_before_snapshot,
+                    )
+                    if verify.get("verified"):
+                        result["verified"] = True
+                        result["verify_match"] = verify.get("match", [])
                     else:
-                        # 카운트 확인 불가 — 조용한 성공 방지용 미확인 플래그
-                        result["unverified"] = True
-                        result["message"] = (
-                            "자동 확인 불가 — 도매상 사이트에서 장바구니 직접 확인 필요"
-                        )
-                        self._progress(
-                            f"  [{code}] ⚠️ 담기 완료 표시됐으나 장바구니 카운트 "
-                            f"확인 불가 — 실제 담김 수동 확인 필요"
-                        )
+                        # 폴백: cart_count 증가했으면 provisional 성공 허용
+                        cart_after_count = await self._get_cart_count()
+                        if (
+                            cart_before_count >= 0
+                            and cart_after_count > cart_before_count
+                        ):
+                            result["verified"] = False
+                            result["verify_fallback"] = "count_increased"
+                        else:
+                            # 실제로 담김 확인 안 됨 — 실패 처리
+                            result["success"] = False
+                            result["verified"] = False
+                            result["message"] = (
+                                f"장바구니 담김 확인 실패 "
+                                f"({verify.get('reason', 'no row change')})"
+                            )
+                            # 품절일 수도 — 재주문 경로 타도록 표시
+                            if cart_before_count >= 0 and cart_after_count == cart_before_count:
+                                result["out_of_stock"] = True
 
                 order_result["results"].append(result)
                 if not result["success"]:
@@ -321,10 +333,6 @@ class WholesalerBase(ABC):
             await self._screenshot(f"{prefix}_cart_final.png")
 
             success_count = sum(1 for r in order_result["results"] if r["success"])
-            unverified_count = sum(
-                1 for r in order_result["results"]
-                if r.get("success") and r.get("unverified")
-            )
             fail_count = len(order_result["results"]) - success_count
             if success_count == 0:
                 fail_reasons = [r.get("message", "") for r in order_result["results"] if not r["success"]]
@@ -337,8 +345,6 @@ class WholesalerBase(ABC):
             notes = []
             if fail_count:
                 notes.append(f"실패 {fail_count}건")
-            if unverified_count:
-                notes.append(f"⚠️ 미확인 {unverified_count}건 (수동 확인 필요)")
             suffix = f" ({', '.join(notes)})" if notes else ""
             if dry_run:
                 self._progress(
@@ -349,15 +355,6 @@ class WholesalerBase(ABC):
                     f"장바구니 {success_count}건 완료{suffix}"
                 )
             else:
-                if unverified_count == success_count:
-                    # 전부 미확인 — 주문확정 위험, 보류
-                    order_result["success"] = False
-                    order_result["message"] = (
-                        "⚠️ 모든 항목이 담김 확인 불가 — 주문확정 보류. "
-                        "도매상 사이트에서 장바구니 직접 확인 필요"
-                    )
-                    self._progress(order_result["message"])
-                    return order_result
                 self._progress("주문확정 중...")
                 await self._confirm_order()
                 await self._screenshot(f"{prefix}_order_confirmed.png")
@@ -541,6 +538,106 @@ class WholesalerBase(ABC):
             pass
 
         return -1
+
+    # ────── 장바구니 담김 DOM diff 검증 (공통) ──────
+
+    _TABLE_SNAPSHOT_JS = r"""
+    () => Array.from(document.querySelectorAll('table')).map((tbl, i) => {
+      let text = '';
+      try { text = (tbl.innerText || '').slice(0, 20000); } catch (_) {}
+      return {
+        idx: i,
+        row_count: tbl.querySelectorAll('tbody tr, tr').length,
+        text: text,
+      };
+    })
+    """
+
+    async def _snapshot_tables(self) -> list:
+        """페이지의 모든 <table> 의 (idx, row_count, innerText) 스냅샷."""
+        if not self._page:
+            return []
+        try:
+            return await self._page.evaluate(self._TABLE_SNAPSHOT_JS)
+        except Exception:
+            return []
+
+    async def _verify_cart_added(
+        self,
+        drug_name: str,
+        insurance_code: str,
+        before: list,
+        after: list | None = None,
+    ) -> dict:
+        """담기 전후 테이블 스냅샷 비교로 실제 담김 여부 검증.
+
+        판정 기준:
+            1. 어느 테이블의 row_count 가 증가했고
+            2. 증가 부분의 텍스트에 보험코드 OR 약품명 토큰 다수 포함
+
+        Returns:
+            {'verified': bool, 'cart_table_idx': int, 'match': list,
+             'rows_added': int} 또는 {'verified': False, 'reason': str}
+        """
+        import re
+
+        if not before:
+            return {"verified": False, "reason": "before snapshot empty"}
+
+        if after is None:
+            after = await self._snapshot_tables()
+        if not after:
+            return {"verified": False, "reason": "after snapshot empty"}
+
+        # 약품명 주요 토큰 (2자 이상만) — 절반 이상 매칭되면 인정
+        name_tokens = []
+        if drug_name:
+            name_tokens = [
+                t for t in re.split(r'[\s()\[\]/\-]+', drug_name) if len(t) >= 2
+            ]
+
+        def _match(new_text: str) -> list[str]:
+            hits = []
+            if insurance_code and insurance_code in new_text:
+                hits.append("code")
+            if name_tokens:
+                matched = sum(1 for t in name_tokens if t in new_text)
+                if matched >= max(1, len(name_tokens) // 2):
+                    hits.append(f"name({matched}/{len(name_tokens)})")
+            return hits
+
+        # 1차: 같은 인덱스 테이블끼리 비교
+        for i in range(min(len(before), len(after))):
+            b, a = before[i], after[i]
+            if a["row_count"] <= b["row_count"]:
+                continue
+            new_text = (
+                a["text"].replace(b["text"], "", 1)
+                if b["text"] and b["text"] in a["text"]
+                else a["text"]
+            )
+            hits = _match(new_text)
+            if hits:
+                return {
+                    "verified": True,
+                    "cart_table_idx": i,
+                    "match": hits,
+                    "rows_added": a["row_count"] - b["row_count"],
+                }
+
+        # 2차: 테이블 개수/순서가 바뀐 경우 — 전체 after 텍스트에 코드 있는지만
+        if insurance_code:
+            whole_after = "\n".join(a["text"] for a in after)
+            whole_before = "\n".join(b["text"] for b in before)
+            if insurance_code in whole_after and insurance_code not in whole_before:
+                return {
+                    "verified": True,
+                    "cart_table_idx": -1,
+                    "match": ["code(global)"],
+                    "rows_added": 0,
+                }
+
+        return {"verified": False, "reason": "no table added matching row"}
 
     # ────── 장바구니 실패 감지 (공통) ──────
 

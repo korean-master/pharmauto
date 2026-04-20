@@ -10,6 +10,41 @@ import sys
 from wholesalers.base import WholesalerBase, choose_best_pack, parse_pack_size
 
 
+def _guess_column_indices(headers: list) -> dict:
+    """검색 결과 테이블 헤더에서 컬럼 역할별 인덱스를 추측한다.
+
+    자동 온보딩(full_onboard) 결과의 table_sel 에 쓰인다.
+    헤더 한글 키워드 기반 매칭. 정확하지 않으면 누락 허용 — 부분 정보라도
+    없는 것보다 낫다.
+    """
+    out: dict = {}
+    last = len(headers) - 1 if headers else -1
+    for i, h in enumerate(headers or []):
+        if not h:
+            continue
+        hh = h.strip()
+        if any(k in hh for k in ("보험", "코드")):
+            out.setdefault("code_col_idx", i)
+        elif any(k in hh for k in ("약품", "품명", "제품", "상품")):
+            out.setdefault("name_col_idx", i)
+        elif any(k in hh for k in ("규격", "포장")):
+            out.setdefault("unit_col_idx", i)
+        elif any(k in hh for k in ("제조", "메이커")):
+            out.setdefault("mfr_col_idx", i)
+        elif "재고" in hh:
+            out.setdefault("stock_col_idx", i)
+        elif any(k in hh for k in ("단가", "가격", "금액")):
+            out.setdefault("price_col_idx", i)
+        elif any(k in hh for k in ("수량", "주문수량")):
+            out.setdefault("qty_col_idx", i)
+    # 담기 컬럼은 마지막 빈 헤더 또는 "담기/장바구니" 포함 컬럼
+    if last >= 0 and "cart_col_idx" not in out:
+        h_last = (headers[last] or "").strip()
+        if not h_last or any(k in h_last for k in ("담기", "장바구니", "추가", "카트")):
+            out["cart_col_idx"] = last
+    return out
+
+
 class GenericWholesaler(WholesalerBase):
     """사이트 구조를 자동 탐지하여 주문하는 범용 도매상 클래스.
 
@@ -1384,6 +1419,329 @@ DOM 뼈대:
                 result["note"] = "search_input 셀렉터 없음 — 검색 단계 생략"
 
             return result
+        finally:
+            try:
+                await self._close()
+            except Exception:
+                pass
+
+    # ────── 자동 온보딩 (v1.5.39) ──────
+
+    async def full_onboard(
+        self, probe_term: str = "타이레놀", headless: bool = True
+    ) -> dict:
+        """도매상 등록 시 1회 수행하는 자동 연동.
+
+        로그인 → 검색 실행 검증 → 담기 후보 수집 → 각 후보 실 클릭 + DOM diff
+        검증 → 검증된 selector 를 Supabase 저장 → 테스트 흔적 정리.
+
+        Returns:
+            {
+                "success": bool,
+                "stage": "login"/"search"/"cart_button"/"verify"/"save"/"done",
+                "message": str,
+                "confirmed_selectors": dict,
+                "onboard_log": {...상세 추적 정보...},
+            }
+        """
+        from datetime import datetime as _dt
+
+        report = {
+            "wid": self._wid,
+            "site_url": self.url,
+            "success": False,
+            "stage": "start",
+            "message": "",
+            "confirmed_selectors": {},
+            "onboard_log": {
+                "stages": [],
+                "candidates_tried": [],
+                "dom_samples": [],
+            },
+        }
+
+        def _mark(stage, ok, detail=""):
+            report["onboard_log"]["stages"].append({
+                "stage": stage, "ok": ok, "detail": detail,
+                "ts": _dt.now().isoformat(),
+            })
+
+        try:
+            await self._launch(headless=headless)
+
+            # 1. 로그인
+            self._progress("연동 [1/5]: 로그인...")
+            if not await self.login_async(headless=headless):
+                report["stage"] = "login"
+                report["message"] = "로그인 실패 — ID/PW 확인 필요"
+                _mark("login", False)
+                return report
+            _mark("login", True)
+
+            # 2. 검색 실행 검증 (search_input 은 기존 셀렉터 사용)
+            search = self._selectors.get("search", {})
+            search_input = search.get("search_input")
+            search_btn = search.get("search_btn")
+
+            if not search_input:
+                report["stage"] = "search"
+                report["message"] = "검색 입력창 셀렉터 없음 — 개발자 분석 필요"
+                _mark("search_probe", False, "no search_input")
+                try:
+                    report["onboard_log"]["dom_samples"].append(
+                        await self._page.evaluate(self._STRUCTURE_ANALYZER_JS)
+                    )
+                except Exception:
+                    pass
+                return report
+
+            self._progress(f"연동 [2/5]: '{probe_term}' 검색 시도...")
+            before_search = await self._snapshot_tables()
+            try:
+                await self._page.fill(search_input, "")
+                await self._page.wait_for_timeout(200)
+                await self._page.fill(search_input, probe_term)
+                await self._page.wait_for_timeout(200)
+                if search_btn:
+                    try:
+                        await self._page.click(search_btn)
+                    except Exception:
+                        await self._page.press(search_input, "Enter")
+                else:
+                    await self._page.press(search_input, "Enter")
+                await self._page.wait_for_timeout(3000)
+            except Exception as e:
+                report["stage"] = "search"
+                report["message"] = f"검색 실행 오류: {e}"
+                _mark("search_probe", False, str(e)[:120])
+                return report
+
+            after_search = await self._snapshot_tables()
+            result_table_idx = -1
+            rows_added = 0
+            for i in range(min(len(before_search), len(after_search))):
+                diff = after_search[i]["row_count"] - before_search[i]["row_count"]
+                if diff > 0:
+                    result_table_idx = i
+                    rows_added = diff
+                    break
+            if result_table_idx < 0:
+                report["stage"] = "search"
+                report["message"] = f"'{probe_term}' 검색 후 결과 행 감지 실패"
+                _mark("search_probe", False, "no rows added")
+                try:
+                    report["onboard_log"]["dom_samples"].append(
+                        await self._page.evaluate(self._STRUCTURE_ANALYZER_JS)
+                    )
+                except Exception:
+                    pass
+                return report
+            _mark("search_probe", True, f"table[{result_table_idx}] +{rows_added}행")
+
+            # 3. 담기 후보 수집
+            self._progress("연동 [3/5]: 담기 버튼 후보 탐색...")
+            dom_report = await self._page.evaluate(self._STRUCTURE_ANALYZER_JS)
+            report["onboard_log"]["dom_samples"].append(dom_report)
+
+            candidates = []
+            for c in dom_report.get("row_last_cell_clickables", []):
+                if c.get("table_idx") != result_table_idx:
+                    continue
+                candidates.append({
+                    "css": c["css"], "in_row": True,
+                    "source": f"row_cell[{c.get('tag')}]",
+                })
+            for b in dom_report.get("buttons_with_text", []):
+                candidates.append({
+                    "css": b["css"], "in_row": b.get("in_table_row", False),
+                    "source": f"btn[{(b.get('text') or b.get('alt') or '')[:20]}]",
+                })
+            for img in dom_report.get("images_likely_buttons", []):
+                alt_lower = (img.get("alt") or "").lower()
+                src_lower = (img.get("src") or "").lower()
+                if any(k in (alt_lower + " " + src_lower)
+                       for k in ["bag", "cart", "담기", "save", "add", "추가"]):
+                    candidates.append({
+                        "css": img["css"], "in_row": img.get("in_row", False),
+                        "source": f"img[{(img.get('alt') or img.get('src') or '')[:30]}]",
+                    })
+
+            # 중복 css 제거
+            seen = set()
+            unique = []
+            for c in candidates:
+                if c["css"] in seen:
+                    continue
+                seen.add(c["css"])
+                unique.append(c)
+            candidates = unique
+
+            if not candidates:
+                report["stage"] = "cart_button"
+                report["message"] = "담기 버튼 후보 없음 — 개발자 분석 필요"
+                _mark("cart_probe", False, "no candidates")
+                return report
+            _mark("cart_probe", True, f"{len(candidates)} candidates")
+
+            # 4. 수량 input 후보 선정 + 약품명 수집
+            qty_input_sel = None
+            for inp in dom_report.get("inputs", []):
+                if inp.get("in_row") and inp.get("row_idx", -1) >= 0:
+                    qty_input_sel = inp["css"]
+                    break
+
+            drug_text = ""
+            try:
+                drug_text = await self._page.evaluate(
+                    "(i) => { const tbls = document.querySelectorAll('table');"
+                    "const rows = tbls[i] ? tbls[i].querySelectorAll('tbody tr, tr') : [];"
+                    "return rows.length ? rows[rows.length - 1].innerText.slice(0, 300) : ''; }",
+                    result_table_idx,
+                )
+            except Exception:
+                pass
+
+            # 5. 후보 시험 담기 → DOM diff 검증
+            self._progress(f"연동 [4/5]: {len(candidates)}개 후보 시험 담기...")
+            confirmed_cart_btn = None
+            confirmed_cart_in_row = False
+            confirmed_cart_table_idx = -1
+
+            for idx, cand in enumerate(candidates, 1):
+                self._progress(f"  시험 담기 {idx}/{len(candidates)}: {cand['source']}")
+                tried_log = {**cand, "result": ""}
+                try:
+                    before = await self._snapshot_tables()
+                    if qty_input_sel:
+                        try:
+                            qty_el = self._page.locator(qty_input_sel).first
+                            if await qty_el.count() > 0:
+                                await qty_el.fill("1")
+                                await self._page.wait_for_timeout(200)
+                        except Exception:
+                            pass
+                    try:
+                        btn = self._page.locator(cand["css"]).first
+                        if await btn.count() == 0:
+                            tried_log["result"] = "not_found"
+                            report["onboard_log"]["candidates_tried"].append(tried_log)
+                            continue
+                        await btn.click(timeout=3000, force=True)
+                    except Exception as e:
+                        tried_log["result"] = "click_error"
+                        tried_log["error"] = str(e)[:120]
+                        report["onboard_log"]["candidates_tried"].append(tried_log)
+                        continue
+
+                    await self._page.wait_for_timeout(1500)
+                    try:
+                        for ps in ['button:has-text("확인")',
+                                   'button:has-text("닫기")']:
+                            p = self._page.locator(ps).first
+                            if await p.count() > 0 and await p.is_visible():
+                                await p.click(timeout=1500)
+                                await self._page.wait_for_timeout(400)
+                                break
+                    except Exception:
+                        pass
+
+                    after = await self._snapshot_tables()
+                    verify = await self._verify_cart_added(
+                        drug_name=drug_text, insurance_code="",
+                        before=before, after=after,
+                    )
+                    if verify.get("verified"):
+                        confirmed_cart_btn = cand["css"]
+                        confirmed_cart_in_row = cand["in_row"]
+                        confirmed_cart_table_idx = verify.get("cart_table_idx", -1)
+                        tried_log["result"] = "VERIFIED"
+                        tried_log["cart_table_idx"] = confirmed_cart_table_idx
+                        report["onboard_log"]["candidates_tried"].append(tried_log)
+                        break
+                    tried_log["result"] = "not_verified"
+                    tried_log["reason"] = verify.get("reason", "")
+                    report["onboard_log"]["candidates_tried"].append(tried_log)
+                except Exception as e:
+                    tried_log["result"] = "error"
+                    tried_log["error"] = str(e)[:120]
+                    report["onboard_log"]["candidates_tried"].append(tried_log)
+
+            if not confirmed_cart_btn:
+                report["stage"] = "verify"
+                report["message"] = (
+                    f"{len(candidates)}개 후보 시도했으나 담김 검증 실패"
+                )
+                _mark("verify", False, "no candidate verified")
+                return report
+            _mark("verify", True, f"cart_btn={confirmed_cart_btn[:60]}")
+
+            # 6. selector 확정
+            self._progress("연동 [5/5]: 셀렉터 저장 + 흔적 정리...")
+            result_tbl_css = dom_report["tables"][result_table_idx].get("css", "")
+            result_rows_sel = (
+                f"{result_tbl_css} tbody tr" if result_tbl_css else ""
+            )
+            cart_rows_sel = ""
+            if 0 <= confirmed_cart_table_idx < len(dom_report["tables"]):
+                cart_tbl_css = dom_report["tables"][confirmed_cart_table_idx].get("css", "")
+                if cart_tbl_css:
+                    cart_rows_sel = f"{cart_tbl_css} tbody tr"
+            headers = dom_report["tables"][result_table_idx].get("headers", [])
+            col_idx = _guess_column_indices(headers)
+
+            confirmed = {
+                "login": self._selectors.get("login", {}),
+                "search": {
+                    "search_input": search_input,
+                    "search_btn": search_btn or "",
+                },
+                "table": {
+                    "result_rows": result_rows_sel,
+                    "qty_input": qty_input_sel or "",
+                    "qty_input_in_row": True,
+                    "cart_btn": confirmed_cart_btn,
+                    "cart_btn_in_row": confirmed_cart_in_row,
+                    "cart_rows_sel": cart_rows_sel,
+                    **col_idx,
+                },
+                "confirm": {},
+                "name": self._wid,
+                "url": self.url,
+                "auto_detected": True,
+                "verified_count": 1,
+            }
+
+            # Supabase 저장
+            try:
+                from core.cloud import upload_selectors, normalize_domain
+                domain = normalize_domain(self.url or self._wid)
+                upload_selectors(domain, self._wid, confirmed)
+            except Exception as e:
+                _mark("save", False, str(e)[:120])
+                report["stage"] = "save"
+                report["message"] = f"서버 저장 실패: {e}"
+                return report
+            _mark("save", True)
+
+            # 로컬 캐시 (upload=False — 방금 명시적으로 업로드함)
+            try:
+                from core.selector_store import save_selectors
+                save_selectors(self._wid, confirmed, upload=False)
+            except Exception:
+                pass
+
+            # 7. 테스트 흔적 정리
+            try:
+                await self._clear_cart()
+            except Exception:
+                pass
+
+            report["success"] = True
+            report["stage"] = "done"
+            report["message"] = "도매상 연동 완료 — 자동 주문 가능"
+            report["confirmed_selectors"] = confirmed
+            _mark("done", True)
+            return report
         finally:
             try:
                 await self._close()

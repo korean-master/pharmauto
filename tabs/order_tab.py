@@ -1521,20 +1521,6 @@ class OrderTab(QWidget):
                     elif status == "cart_only":
                         item.setText("장바구니완료")
                         item.setForeground(QColor(_BLUE))
-                    elif status == "cart_unverified":
-                        item.setText("⚠️ 확인 필요")
-                        item.setForeground(QColor(_RED))
-                        item.setToolTip(
-                            "담김 자동 검증 실패 — 도매상 사이트에서 "
-                            "장바구니에 실제로 담겼는지 직접 확인 필요"
-                        )
-                    elif status == "ordered_unverified":
-                        item.setText("⚠️ 주문 확인 필요")
-                        item.setForeground(QColor(_RED))
-                        item.setToolTip(
-                            "주문은 실행됐으나 담김 검증 실패 — 도매상 사이트에서 "
-                            "실제 주문 내역 확인 필요"
-                        )
                     elif status == "out_of_stock":
                         item.setText("품절")
                         item.setForeground(QColor(_ORANGE))
