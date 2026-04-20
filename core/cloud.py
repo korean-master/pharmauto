@@ -12,9 +12,9 @@ from urllib.parse import quote
 
 import requests
 
-# ────────────────────── 설정 ──────────────────────
+from core import paths
 
-SETTINGS_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "settings.json")
+# ────────────────────── 설정 ──────────────────────
 
 # 기본 Supabase 설정 — settings.json에 없어도 클라우드 기능이 동작하도록
 _DEFAULT_URL = "https://bvxcdgnuslxobcaqdtds.supabase.co"
@@ -29,7 +29,7 @@ _DEFAULT_KEY = (
 def _load_cloud_config() -> tuple[str, str]:
     """settings.json에서 Supabase URL과 anon key를 읽는다."""
     try:
-        with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+        with open(paths.settings_path(), "r", encoding="utf-8") as f:
             s = json.load(f)
         return (s.get("supabase_url") or _DEFAULT_URL,
                 s.get("supabase_key") or _DEFAULT_KEY)
@@ -390,8 +390,7 @@ def sync_local_to_cloud():
     if not is_enabled():
         return
 
-    data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
-    config_dir = os.path.join(os.path.dirname(__file__), "..", "config")
+    data_dir = paths.get_data_dir()
 
     # 1) 약품 캐시 업로드
     drug_cache_path = os.path.join(data_dir, "drug_cache.json")
@@ -424,7 +423,7 @@ def sync_local_to_cloud():
             pass
 
     # 3) 셀렉터 업로드
-    sel_dir = os.path.join(config_dir, "selectors")
+    sel_dir = paths.get_selectors_dir()
     if os.path.exists(sel_dir):
         try:
             for fname in os.listdir(sel_dir):

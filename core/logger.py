@@ -9,19 +9,9 @@ import os
 import sys
 from logging.handlers import RotatingFileHandler
 
-# 로그 파일 경로 — exe 빌드 시에도 data/ 폴더에 저장
-# exe 빌드(PyInstaller/Nuitka) vs 소스 실행 자동 감지
-_exe_dir = os.path.dirname(sys.executable)
-_src_data = os.path.join(os.path.dirname(__file__), "..", "data")
-if os.path.isdir(os.path.join(_exe_dir, "data")):
-    _DATA = os.path.join(_exe_dir, "data")
-elif os.path.isdir(os.path.join(_exe_dir, "_internal", "data")):
-    _DATA = os.path.join(_exe_dir, "_internal", "data")
-else:
-    _DATA = _src_data
+from core import paths
 
-os.makedirs(_DATA, exist_ok=True)
-LOG_PATH = os.path.join(_DATA, "pharmauto.log")
+LOG_PATH = os.path.join(paths.get_logs_dir(), "pharmauto.log")
 
 # 로거 설정
 _logger = logging.getLogger("pharmauto")

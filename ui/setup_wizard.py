@@ -18,8 +18,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-CONFIG_DIR = os.path.join(os.path.dirname(__file__), "..", "config")
-SETTINGS_PATH = os.path.join(CONFIG_DIR, "settings.json")
+from core import paths
 
 # 약국 프로그램별 기본 DB명
 PHARMACY_PROGRAMS = {
@@ -636,10 +635,11 @@ class SetupWizard(QDialog):
         threading.Thread(target=_upload, daemon=True).start()
 
     def _save_settings(self, result: dict):
+        settings_path = paths.settings_path()
         settings = {}
-        if os.path.exists(SETTINGS_PATH):
+        if os.path.exists(settings_path):
             try:
-                with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+                with open(settings_path, "r", encoding="utf-8") as f:
                     settings = json.load(f)
             except Exception:
                 pass
@@ -673,8 +673,7 @@ class SetupWizard(QDialog):
             "cm9sZSI6ImFub24iLCJpYXQiOjE3NzU2MDE3MTYsImV4cCI6MjA5MTE3NzcxNn0."
             "_1KW_PBoHcW2nKyNQlkO-QngtaKKusAqZpi2XxZpHt0")
 
-        os.makedirs(CONFIG_DIR, exist_ok=True)
-        with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+        with open(settings_path, "w", encoding="utf-8") as f:
             json.dump(settings, f, ensure_ascii=False, indent=2)
 
         self._setup_complete = True
@@ -686,10 +685,11 @@ class SetupWizard(QDialog):
 
 def needs_setup() -> bool:
     """초기 설정이 필요한지 확인한다."""
-    if not os.path.exists(SETTINGS_PATH):
+    settings_path = paths.settings_path()
+    if not os.path.exists(settings_path):
         return True
     try:
-        with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+        with open(settings_path, "r", encoding="utf-8") as f:
             settings = json.load(f)
         return not settings.get("setup_complete", False)
     except Exception:

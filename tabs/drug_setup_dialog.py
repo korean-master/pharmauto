@@ -23,19 +23,23 @@ from ui.styles import (
     btn_primary, btn_outline, btn_small_primary,
 )
 
-UNIT_CACHE_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "unit_cache.json")
+from core import paths
+
+
+def _unit_cache_path() -> str:
+    return os.path.join(paths.get_data_dir(), "unit_cache.json")
 
 
 def _load_unit_cache() -> dict:
-    if os.path.exists(UNIT_CACHE_PATH):
-        with open(UNIT_CACHE_PATH, "r", encoding="utf-8") as f:
+    p = _unit_cache_path()
+    if os.path.exists(p):
+        with open(p, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
 
 
 def _save_unit_cache(cache: dict):
-    os.makedirs(os.path.dirname(UNIT_CACHE_PATH), exist_ok=True)
-    with open(UNIT_CACHE_PATH, "w", encoding="utf-8") as f:
+    with open(_unit_cache_path(), "w", encoding="utf-8") as f:
         json.dump(cache, f, ensure_ascii=False, indent=2)
 
 
@@ -95,8 +99,8 @@ class UnitFetchWorker(QThread):
             return int(m.group(1)) if m else 0
 
         try:
-            config_dir = os.path.join(os.path.dirname(__file__), "..", "config")
-            ws_path = os.path.join(config_dir, "wholesalers.json")
+            from core import paths
+            ws_path = paths.wholesalers_path()
             with open(ws_path, "r", encoding="utf-8") as f:
                 ws = json.load(f).get("geo", {})
 

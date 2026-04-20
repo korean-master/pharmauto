@@ -7,8 +7,6 @@ import sys
 
 from wholesalers.base import WholesalerBase, choose_best_pack, parse_pack_size
 
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "wholesalers.json")
-
 
 def _load_geo_config() -> dict:
     from core.crypto import load_wholesalers_secure

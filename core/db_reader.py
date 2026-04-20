@@ -9,11 +9,11 @@ from datetime import datetime, timedelta
 
 import pyodbc
 
-SETTINGS_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "settings.json")
+from core import paths
 
 
 def _load_settings():
-    with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+    with open(paths.settings_path(), "r", encoding="utf-8") as f:
         return json.load(f)
 
 

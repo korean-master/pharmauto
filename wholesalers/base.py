@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 
 from playwright.async_api import async_playwright
 
-SCREENSHOT_DIR = os.path.join(os.path.dirname(__file__), "..", "screenshots")
+from core import paths
 
 
 # ────────────────────── 공통 유틸 ──────────────────────
@@ -185,8 +185,7 @@ class WholesalerBase(ABC):
                 pass
 
     async def _screenshot(self, filename: str) -> str:
-        os.makedirs(SCREENSHOT_DIR, exist_ok=True)
-        path = os.path.join(SCREENSHOT_DIR, filename)
+        path = os.path.join(paths.get_screenshots_dir(), filename)
         await self._page.screenshot(path=path, full_page=True)
         return path
 

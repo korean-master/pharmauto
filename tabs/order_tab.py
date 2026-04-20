@@ -37,7 +37,7 @@ from ui.styles import (
     btn_primary, btn_success, btn_order,
 )
 
-CONFIG_DIR = os.path.join(os.path.dirname(__file__), "..", "config")
+from core import paths
 
 ORDER_TYPE_LABELS = {
     "immediate": "즉시",
@@ -48,7 +48,7 @@ ORDER_TYPE_LABELS = {
 
 
 def _load_json(filename):
-    path = os.path.join(CONFIG_DIR, filename)
+    path = os.path.join(paths.get_config_dir(), filename)
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -56,7 +56,7 @@ def _load_json(filename):
 
 
 def _save_json(filename, data):
-    path = os.path.join(CONFIG_DIR, filename)
+    path = os.path.join(paths.get_config_dir(), filename)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -74,7 +74,8 @@ def _get_unit_options(insurance_code: str) -> list[int]:
     import json as _json
 
     # 1) unit_cache.json
-    cache_path = os.path.join(os.path.dirname(__file__), "..", "data", "unit_cache.json")
+    data_dir = paths.get_data_dir()
+    cache_path = os.path.join(data_dir, "unit_cache.json")
     if os.path.exists(cache_path):
         with open(cache_path, "r", encoding="utf-8") as f:
             cache = _json.load(f)
@@ -82,7 +83,7 @@ def _get_unit_options(insurance_code: str) -> list[int]:
             return sorted(cache[insurance_code])
 
     # 2) drug_preferences.json
-    prefs_path = os.path.join(os.path.dirname(__file__), "..", "data", "drug_preferences.json")
+    prefs_path = os.path.join(data_dir, "drug_preferences.json")
     if os.path.exists(prefs_path):
         with open(prefs_path, "r", encoding="utf-8") as f:
             prefs = _json.load(f)

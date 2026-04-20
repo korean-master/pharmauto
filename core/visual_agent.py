@@ -18,7 +18,7 @@ import os
 import re
 from dataclasses import dataclass, field
 
-SCREENSHOT_DIR = os.path.join(os.path.dirname(__file__), "..", "screenshots")
+from core import paths
 
 MAX_RETRIES = 3  # 단계별 최대 재시도
 SEARCH_TERMS = [
@@ -595,9 +595,8 @@ DOM 뼈대:
         b64 = base64.b64encode(png_bytes).decode("ascii")
 
         # 디버그용 저장
-        os.makedirs(SCREENSHOT_DIR, exist_ok=True)
         step_num = len(self._step_history) + 1
-        path = os.path.join(SCREENSHOT_DIR, f"agent_{self._wid}_{step_num:02d}.png")
+        path = os.path.join(paths.get_screenshots_dir(), f"agent_{self._wid}_{step_num:02d}.png")
         with open(path, "wb") as f:
             f.write(png_bytes)
 

@@ -5,16 +5,13 @@ import os
 import sqlite3
 from datetime import datetime
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
-DB_PATH = os.path.join(DATA_DIR, "order_history.db")
-SETTINGS_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "settings.json")
-WHOLESALERS_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "wholesalers.json")
+from core import paths
 
 
 def is_cart_only_mode() -> bool:
     """주문 확정 방식이 '장바구니만 담기'인지 확인한다."""
     try:
-        with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+        with open(paths.settings_path(), "r", encoding="utf-8") as f:
             settings = json.load(f)
         return settings.get("order_confirm_mode") == "cart_only"
     except Exception:
@@ -22,8 +19,7 @@ def is_cart_only_mode() -> bool:
 
 
 def _get_db():
-    os.makedirs(DATA_DIR, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(os.path.join(paths.get_data_dir(), "order_history.db"))
     conn.execute("""
         CREATE TABLE IF NOT EXISTS order_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,12 +64,13 @@ def _load_wholesalers():
 
 def _update_ws_status(wid: str, status: str):
     """도매상 연결 상태를 wholesalers.json에 저장한다."""
+    ws_path = paths.wholesalers_path()
     try:
-        with open(WHOLESALERS_PATH, "r", encoding="utf-8") as f:
+        with open(ws_path, "r", encoding="utf-8") as f:
             ws = json.load(f)
         if wid in ws:
             ws[wid]["connection_status"] = status
-            with open(WHOLESALERS_PATH, "w", encoding="utf-8") as f:
+            with open(ws_path, "w", encoding="utf-8") as f:
                 json.dump(ws, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
@@ -82,7 +79,7 @@ def _update_ws_status(wid: str, status: str):
 def _get_split_settings() -> dict:
     """주문 분배 설정을 읽는다."""
     try:
-        with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+        with open(paths.settings_path(), "r", encoding="utf-8") as f:
             settings = json.load(f)
         return {
             "mode": settings.get("order_split_mode", "single"),

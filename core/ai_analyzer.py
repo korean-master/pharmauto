@@ -11,16 +11,15 @@ API 키는 서버에만 존재하며 앱에 포함되지 않는다.
 
 import asyncio
 import json
-import os
 import re
 
-SETTINGS_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "settings.json")
+from core import paths
 
 
 def _load_cloud_config() -> tuple[str, str]:
     """settings.json에서 Supabase 설정을 읽는다."""
     try:
-        with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+        with open(paths.settings_path(), "r", encoding="utf-8") as f:
             s = json.load(f)
         return s.get("supabase_url", ""), s.get("supabase_key", "")
     except Exception:
@@ -30,7 +29,7 @@ def _load_cloud_config() -> tuple[str, str]:
 def _load_api_key() -> str:
     """settings.json에서 Claude API 키를 읽는다 (로컬 폴백용)."""
     try:
-        with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+        with open(paths.settings_path(), "r", encoding="utf-8") as f:
             s = json.load(f)
         return s.get("claude_api_key", "")
     except Exception:

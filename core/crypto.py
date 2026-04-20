@@ -8,7 +8,8 @@ import base64
 import json
 import os
 
-CONFIG_DIR = os.path.join(os.path.dirname(__file__), "..", "config")
+from core import paths
+
 ENCRYPTED_PREFIX = "ENC:"
 
 
@@ -93,7 +94,7 @@ WHOLESALER_SENSITIVE_FIELDS = ["id", "pw"]
 
 def load_settings_secure() -> dict:
     """settings.json을 읽고 민감 필드를 복호화하여 반환한다."""
-    path = os.path.join(CONFIG_DIR, "settings.json")
+    path = paths.settings_path()
     if not os.path.exists(path):
         return {}
     with open(path, "r", encoding="utf-8") as f:
@@ -103,16 +104,14 @@ def load_settings_secure() -> dict:
 
 def save_settings_secure(settings: dict):
     """settings.json에 민감 필드를 암호화하여 저장한다."""
-    path = os.path.join(CONFIG_DIR, "settings.json")
     encrypted = encrypt_dict_fields(settings, SETTINGS_SENSITIVE_FIELDS)
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    with open(paths.settings_path(), "w", encoding="utf-8") as f:
         json.dump(encrypted, f, ensure_ascii=False, indent=2)
 
 
 def load_wholesalers_secure() -> dict:
     """wholesalers.json을 읽고 각 도매상의 ID/PW를 복호화하여 반환한다."""
-    path = os.path.join(CONFIG_DIR, "wholesalers.json")
+    path = paths.wholesalers_path()
     if not os.path.exists(path):
         return {}
     with open(path, "r", encoding="utf-8") as f:
@@ -125,12 +124,10 @@ def load_wholesalers_secure() -> dict:
 
 def save_wholesalers_secure(data: dict):
     """wholesalers.json에 각 도매상의 ID/PW를 암호화하여 저장한다."""
-    path = os.path.join(CONFIG_DIR, "wholesalers.json")
     encrypted = {}
     for wid, ws in data.items():
         encrypted[wid] = encrypt_dict_fields(ws, WHOLESALER_SENSITIVE_FIELDS)
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    with open(paths.wholesalers_path(), "w", encoding="utf-8") as f:
         json.dump(encrypted, f, ensure_ascii=False, indent=2)
 
 
@@ -140,7 +137,7 @@ def migrate_plaintext():
     이미 암호화된 값은 건너뛴다. 안전하게 여러 번 실행 가능.
     """
     # settings.json
-    settings_path = os.path.join(CONFIG_DIR, "settings.json")
+    settings_path = paths.settings_path()
     if os.path.exists(settings_path):
         with open(settings_path, "r", encoding="utf-8") as f:
             settings = json.load(f)
@@ -156,7 +153,7 @@ def migrate_plaintext():
             print("[보안] settings.json 민감 필드 암호화 완료")
 
     # wholesalers.json
-    ws_path = os.path.join(CONFIG_DIR, "wholesalers.json")
+    ws_path = paths.wholesalers_path()
     if os.path.exists(ws_path):
         with open(ws_path, "r", encoding="utf-8") as f:
             data = json.load(f)

@@ -12,8 +12,7 @@ import json
 import os
 from datetime import datetime
 
-CONFIG_DIR = os.path.join(os.path.dirname(__file__), "..", "config")
-AUTH_PATH = os.path.join(CONFIG_DIR, "auth.json")
+from core import paths
 
 # 활성화 코드 시드 (이 값으로 코드를 생성/검증)
 # 코드 형식: PHARMA-XXXX-XXXX (대문자+숫자 8자리)
@@ -85,10 +84,11 @@ def verify_code(code: str) -> dict:
 
 def is_activated() -> bool:
     """앱이 활성화되었는지 확인한다."""
-    if not os.path.exists(AUTH_PATH):
+    p = paths.auth_path()
+    if not os.path.exists(p):
         return False
     try:
-        with open(AUTH_PATH, "r", encoding="utf-8") as f:
+        with open(p, "r", encoding="utf-8") as f:
             auth = json.load(f)
         return auth.get("activated", False)
     except Exception:
@@ -97,10 +97,11 @@ def is_activated() -> bool:
 
 def get_auth_info() -> dict:
     """현재 인증 정보를 반환한다."""
-    if not os.path.exists(AUTH_PATH):
+    p = paths.auth_path()
+    if not os.path.exists(p):
         return {}
     try:
-        with open(AUTH_PATH, "r", encoding="utf-8") as f:
+        with open(p, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return {}
@@ -123,8 +124,7 @@ def activate(code: str) -> dict:
         "license_type": "beta",
     }
 
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    with open(AUTH_PATH, "w", encoding="utf-8") as f:
+    with open(paths.auth_path(), "w", encoding="utf-8") as f:
         json.dump(auth, f, ensure_ascii=False, indent=2)
 
     return {"success": True, "message": "활성화 성공"}
@@ -132,8 +132,9 @@ def activate(code: str) -> dict:
 
 def deactivate():
     """활성화를 해제한다."""
-    if os.path.exists(AUTH_PATH):
-        os.remove(AUTH_PATH)
+    p = paths.auth_path()
+    if os.path.exists(p):
+        os.remove(p)
 
 
 # ────────────────────── 향후 서버 로그인 확장 지점 ──────────────────────

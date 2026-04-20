@@ -7,8 +7,7 @@
 import json
 import os
 
-CONFIG_DIR = os.path.join(os.path.dirname(__file__), "..", "config")
-CACHE_PATH = os.path.join(CONFIG_DIR, "history_configs.json")
+from core import paths
 
 
 # ────────── 기본 설정 (하드코딩 — 스캔으로 발견한 것) ──────────
@@ -122,9 +121,10 @@ DEFAULT_CONFIGS = {
 # ────────── 로컬 캐시 ──────────
 
 def _load_cache() -> dict:
-    if os.path.exists(CACHE_PATH):
+    cache_path = paths.history_configs_path()
+    if os.path.exists(cache_path):
         try:
-            with open(CACHE_PATH, "r", encoding="utf-8") as f:
+            with open(cache_path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             pass
@@ -132,8 +132,7 @@ def _load_cache() -> dict:
 
 
 def _save_cache(data: dict):
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    with open(CACHE_PATH, "w", encoding="utf-8") as f:
+    with open(paths.history_configs_path(), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 

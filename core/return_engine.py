@@ -4,13 +4,15 @@ import os
 import sqlite3
 from datetime import datetime
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
-DB_PATH = os.path.join(DATA_DIR, "order_history.db")
+from core import paths
+
+
+def _db_path() -> str:
+    return os.path.join(paths.get_data_dir(), "order_history.db")
 
 
 def _get_db():
-    os.makedirs(DATA_DIR, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(_db_path())
     conn.execute("""
         CREATE TABLE IF NOT EXISTS return_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,14 +64,15 @@ def find_orders_for_return(drug_name: str) -> list[dict]:
     검색어를 토큰으로 분리하여 각 토큰이 모두 포함된 결과만 반환.
     예: "자누메트50/1000" → 자누메트, 50, 1000 모두 포함된 약품.
     """
-    if not os.path.exists(DB_PATH):
+    db_path = _db_path()
+    if not os.path.exists(db_path):
         return []
 
     tokens = _tokenize_query(drug_name)
     if not tokens:
         return []
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
 
     # 각 토큰에 대해 LIKE 조건 생성
@@ -170,9 +173,8 @@ def _get_wholesaler_classes() -> list[tuple[str, type, dict]]:
     """
     import json
     import importlib
-    config_path = os.path.join(
-        os.path.dirname(__file__), "..", "config", "wholesalers.json"
-    )
+    from core import paths
+    config_path = paths.wholesalers_path()
     if not os.path.exists(config_path):
         return []
 

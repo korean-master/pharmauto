@@ -11,8 +11,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
-SETTINGS_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "settings.json")
-CACHE_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "drug_cache.json")
+from core import paths
+
+
+def _cache_path() -> str:
+    return os.path.join(paths.get_data_dir(), "drug_cache.json")
 
 # ── 메모리 캐시 (앱 수명 동안 유지) ──
 _cache: dict | None = None
@@ -55,8 +58,9 @@ def _ensure_cache_loaded():
     """캐시가 메모리에 없으면 파일에서 로드한다."""
     global _cache
     if _cache is None:
-        if os.path.exists(CACHE_PATH):
-            with open(CACHE_PATH, "r", encoding="utf-8") as f:
+        p = _cache_path()
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
                 _cache = json.load(f)
         else:
             _cache = {}
@@ -64,8 +68,7 @@ def _ensure_cache_loaded():
 
 def _save_cache():
     """메모리 캐시를 파일에 저장한다."""
-    os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
-    with open(CACHE_PATH, "w", encoding="utf-8") as f:
+    with open(_cache_path(), "w", encoding="utf-8") as f:
         json.dump(_cache, f, ensure_ascii=False, indent=2)
 
 

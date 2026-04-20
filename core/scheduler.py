@@ -7,12 +7,11 @@ from datetime import datetime
 
 from PyQt6.QtCore import QThread, QTimer, pyqtSignal
 
-
-SETTINGS_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "settings.json")
+from core import paths
 
 
 def _load_settings():
-    with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+    with open(paths.settings_path(), "r", encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -71,7 +70,7 @@ class OrderScheduler(QThread):
     @staticmethod
     def _get_unit_options(insurance_code: str) -> list[int]:
         """약품 규격 목록을 캐시에서 조회."""
-        data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
+        data_dir = paths.get_data_dir()
 
         cache_path = os.path.join(data_dir, "unit_cache.json")
         if os.path.exists(cache_path):
@@ -226,8 +225,7 @@ class OrderScheduler(QThread):
         )
 
         # 제외 약품 필터링
-        config_dir = os.path.join(os.path.dirname(__file__), "..", "config")
-        exc_path = os.path.join(config_dir, "exclusions.json")
+        exc_path = paths.exclusions_path()
         exclusions = {}
         if os.path.exists(exc_path):
             with open(exc_path, "r", encoding="utf-8") as f:

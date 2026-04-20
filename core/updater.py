@@ -15,9 +15,8 @@ import tempfile
 
 import requests
 
+from core import paths
 from core.version import VERSION
-
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "settings.json")
 
 REPO = "korean-master/pharmauto"
 INSTALLER_NAME = "PharmAutoSetup.exe"
@@ -127,7 +126,7 @@ def _apply_delta_update(download_url: str, progress_callback=None) -> bool:
 
         app_dir = os.path.dirname(sys.executable)
         current_exe = os.path.join(app_dir, "PharmAuto.exe")
-        data_dir = os.path.join(app_dir, "data")
+        data_dir = paths.get_data_dir()
         marker_path = os.path.join(data_dir, "installed_version.txt")
 
         helper_path = os.path.join(tmp_dir, "_delta.bat")
@@ -221,7 +220,7 @@ def _apply_full_installer_update(download_url: str, progress_callback=None,
         # 업데이트 완료 마커 — 재시작 후 첫 기동에서 업데이트 중복 체크 방지용
         app_dir = os.path.dirname(sys.executable)
         app_exe = os.path.join(app_dir, "PharmAuto.exe")
-        data_dir = os.path.join(app_dir, "data")
+        data_dir = paths.get_data_dir()
         marker_path = os.path.join(data_dir, "installed_version.txt")
         new_version = ""
         # 다운로드 URL의 tag 부분에서 버전 추출 (예: /v1.5.31/ → 1.5.31)

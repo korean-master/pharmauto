@@ -60,3 +60,6 @@ data/db_structure*.json
 # Misc
 *.log
 .env
+
+# Developer local build helpers
+_dev_build.bat

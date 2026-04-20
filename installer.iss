@@ -2,7 +2,7 @@
 ; 빌드: "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
 
 #define MyAppName "PharmAuto"
-#define MyAppVersion "1.5.34"
+#define MyAppVersion "1.5.35"
 #define MyAppPublisher "PharmAuto"
 #define MyAppExeName "PharmAuto.exe"
 #define BuildDir "dist_nuitka\main.dist"
@@ -37,20 +37,12 @@ Name: "startup"; Description: "Windows 시작 시 자동 실행"; GroupDescripti
 
 [Files]
 ; Nuitka 빌드 결과 — 플랫 구조 (exe + dll/pyd + 서브폴더 전부)
+; v1.5.35 부터 사용자 데이터는 {userappdata}\PharmAuto 에만 저장 — {app} 은 바이너리 전용
 Source: "{#BuildDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#BuildDir}\*"; DestDir: "{app}"; Excludes: "{#MyAppExeName},config\*,data\*"; Flags: ignoreversion recursesubdirs createallsubdirs
-; config: settings.template.json만 동봉 (사용자 데이터 파일은 절대 미포함)
-; 설치 마법사와 앱 자체가 실행 시 필요한 json 파일을 빈 상태로 생성함
-Source: "config\settings.template.json"; DestDir: "{app}\config"; Flags: onlyifdoesntexist
+Source: "{#BuildDir}\*"; DestDir: "{app}"; Excludes: "{#MyAppExeName},config\*,data\*,screenshots\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; tools: 유팜 SQL 자동 설정용 스크립트 + PsExec
 Source: "tools\setup_upharm_sql.bat"; DestDir: "{app}\tools"; Flags: ignoreversion
 Source: "tools\psexec64.exe"; DestDir: "{app}\tools"; Flags: ignoreversion
-
-[Dirs]
-Name: "{app}\data"; Permissions: users-full
-Name: "{app}\config"; Permissions: users-full
-Name: "{app}\config\selectors"; Permissions: users-full
-Name: "{app}\screenshots"; Permissions: users-full
 
 [Icons]
 ; 시작 메뉴
@@ -69,6 +61,11 @@ Filename: "{app}\{#MyAppExeName}"; Description: "PharmAuto 실행"; Flags: nowai
 [InstallDelete]
 ; 업데이트 시 옛날 PyInstaller 잔재 정리
 Type: filesandordirs; Name: "{app}\_internal"
+; v1.5.35: 구 버전이 남긴 {app}\config, {app}\data 비우기 — 앱이 첫 실행 시 APPDATA 로 자동 이전
+; (migrate_from_legacy_install 이 이전 끝나고 여기서 지워야 함 — 순서: 앱 기동 전 InstallDelete)
+; 주의: InstallDelete 는 파일 복사 전에 실행되므로, 마이그레이션은 앱 기동 시 이루어진다.
+; 따라서 여기서는 config 를 아직 지우지 않음 (첫 기동 마이그레이션이 먼저).
+; 대신 앱 실행 시 paths.migrate_from_legacy_install() 완료 후 사용자가 다음 업데이트 때 정리됨.
 ; Nuitka 모듈 폴더 갱신
 Type: filesandordirs; Name: "{app}\PyQt6"
 Type: filesandordirs; Name: "{app}\playwright"

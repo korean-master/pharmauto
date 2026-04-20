@@ -8,21 +8,25 @@ import json
 import os
 from datetime import datetime, timedelta
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
-CACHE_PATH = os.path.join(DATA_DIR, "price_cache.json")
+from core import paths
+
 CACHE_EXPIRY_DAYS = 365
 
 
+def _cache_path() -> str:
+    return os.path.join(paths.get_data_dir(), "price_cache.json")
+
+
 def _load_cache() -> dict:
-    if os.path.exists(CACHE_PATH):
-        with open(CACHE_PATH, "r", encoding="utf-8") as f:
+    p = _cache_path()
+    if os.path.exists(p):
+        with open(p, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
 
 
 def _save_cache(cache: dict):
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(CACHE_PATH, "w", encoding="utf-8") as f:
+    with open(_cache_path(), "w", encoding="utf-8") as f:
         json.dump(cache, f, ensure_ascii=False, indent=2)
 
 

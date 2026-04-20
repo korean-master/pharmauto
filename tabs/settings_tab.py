@@ -30,11 +30,11 @@ from ui.styles import (
     btn_primary, btn_success, btn_danger, btn_small_primary, btn_small_danger,
 )
 
-CONFIG_DIR = os.path.join(os.path.dirname(__file__), "..", "config")
+from core import paths
 
 
 def _load_json(filename):
-    path = os.path.join(CONFIG_DIR, filename)
+    path = os.path.join(paths.get_config_dir(), filename)
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -42,7 +42,7 @@ def _load_json(filename):
 
 
 def _save_json(filename, data):
-    path = os.path.join(CONFIG_DIR, filename)
+    path = os.path.join(paths.get_config_dir(), filename)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 

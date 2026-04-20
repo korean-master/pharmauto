@@ -204,10 +204,10 @@ class PharmAutoWindow(QMainWindow):
 
     def _update_title(self):
         import json
+        from core import paths
         from core.version import VERSION
-        settings_path = os.path.join(ROOT_DIR, "config", "settings.json")
         try:
-            with open(settings_path, "r", encoding="utf-8") as f:
+            with open(paths.settings_path(), "r", encoding="utf-8") as f:
                 settings = json.load(f)
             name = settings.get("pharmacy_name", "")
         except Exception:
@@ -402,8 +402,9 @@ class PharmAutoWindow(QMainWindow):
 
 def _check_and_apply_update(app: QApplication):
     """앱 시작 시 업데이트를 확인하고, 있으면 자동 적용 후 재시작한다."""
+    from core import paths
     # 방금 업데이트 직후 마커 체크 — 이중 설치 사이클 방지
-    marker_path = os.path.join(ROOT_DIR, "data", "installed_version.txt")
+    marker_path = os.path.join(paths.get_data_dir(), "installed_version.txt")
     if os.path.exists(marker_path):
         try:
             with open(marker_path, "r", encoding="utf-8") as f:
@@ -513,7 +514,8 @@ def _db_connection_broken() -> bool:
     """설정된 DB에 연결할 수 있는지 빠르게 확인한다."""
     try:
         import json
-        settings_path = os.path.join(ROOT_DIR, "config", "settings.json")
+        from core import paths
+        settings_path = paths.settings_path()
         if not os.path.exists(settings_path):
             return False
         with open(settings_path, "r", encoding="utf-8") as f:
@@ -537,10 +539,21 @@ def main():
     # DPI 스케일링 대응
     os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
 
+    # v1.5.35: 기존 {app}\config 데이터를 %APPDATA%\PharmAuto 로 일회성 이전
+    # 로거/다른 core 모듈보다 먼저 — 모두 이 경로에 의존
+    from core.paths import migrate_from_legacy_install, snapshot_config_daily
+    migrate_from_legacy_install()
+
     # 단일 인스턴스 보장 — 이미 실행 중이면 기존 창 복원
     if _is_already_running():
         _bring_existing_window()
         sys.exit(0)
+
+    # 일 1회 config 스냅샷 — 사용자 실수 방지 안전장치
+    try:
+        snapshot_config_daily()
+    except Exception:
+        pass
 
     # 로깅 시스템 초기화 — 모든 print/에러를 파일에 기록
     from core.logger import setup_global_logging, get_logger

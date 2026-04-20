@@ -14,23 +14,29 @@ import json
 import os
 from datetime import datetime
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
-INVENTORY_PATH = os.path.join(DATA_DIR, "inventory.json")
-HISTORY_PATH = os.path.join(DATA_DIR, "stock_history.json")
+from core import paths
+
+
+def _inventory_path() -> str:
+    return os.path.join(paths.get_data_dir(), "inventory.json")
+
+
+def _history_path() -> str:
+    return os.path.join(paths.get_data_dir(), "stock_history.json")
 
 
 # ──────────────────────── inventory.json ────────────────────────
 
 def load_inventory() -> dict:
-    if os.path.exists(INVENTORY_PATH):
-        with open(INVENTORY_PATH, "r", encoding="utf-8") as f:
+    p = _inventory_path()
+    if os.path.exists(p):
+        with open(p, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
 
 
 def save_inventory(inv: dict):
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(INVENTORY_PATH, "w", encoding="utf-8") as f:
+    with open(_inventory_path(), "w", encoding="utf-8") as f:
         json.dump(inv, f, ensure_ascii=False, indent=2)
 
 
@@ -368,13 +374,13 @@ def _add_history(insurance_code: str, name: str, event_type: str,
 
 
 def load_history() -> list:
-    if os.path.exists(HISTORY_PATH):
-        with open(HISTORY_PATH, "r", encoding="utf-8") as f:
+    p = _history_path()
+    if os.path.exists(p):
+        with open(p, "r", encoding="utf-8") as f:
             return json.load(f)
     return []
 
 
 def _save_history(history: list):
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(HISTORY_PATH, "w", encoding="utf-8") as f:
+    with open(_history_path(), "w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False, indent=2)

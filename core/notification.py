@@ -1,15 +1,14 @@
 """알림 모듈 - 카카오 알림톡 연동."""
 
 import json
-import os
 
 import requests
 
-SETTINGS_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "settings.json")
+from core import paths
 
 
 def _load_settings():
-    with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+    with open(paths.settings_path(), "r", encoding="utf-8") as f:
         return json.load(f)
 
 

@@ -12,7 +12,7 @@ import json
 import os
 from datetime import datetime
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
+from core import paths
 
 
 def inspect_database(db: dict) -> dict:
@@ -103,9 +103,8 @@ def export_structure(db: dict, program_name: str) -> tuple[str, bool]:
     structure = inspect_database(db)
     structure["program"] = program_name
 
-    os.makedirs(DATA_DIR, exist_ok=True)
     filename = f"db_structure_{program_name}.json"
-    path = os.path.join(DATA_DIR, filename)
+    path = os.path.join(paths.get_data_dir(), filename)
 
     with open(path, "w", encoding="utf-8") as f:
         json.dump(structure, f, ensure_ascii=False, indent=2)
