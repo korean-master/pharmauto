@@ -234,6 +234,7 @@ def _apply_full_installer_update(download_url: str, progress_callback=None,
         with open(hta_path, "w", encoding="utf-8") as f:
             f.write("""<html>
 <head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
 <title>PharmAuto 업데이트</title>
 <HTA:APPLICATION WINDOWSTATE="normal" SHOWINTASKBAR="no" SYSMENU="no"
  CAPTION="yes" BORDER="thin" MAXIMIZEBUTTON="no" MINIMIZEBUTTON="no"
