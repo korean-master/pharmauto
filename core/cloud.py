@@ -422,22 +422,12 @@ def sync_local_to_cloud():
         except Exception:
             pass
 
-    # 3) 셀렉터 업로드
-    sel_dir = paths.get_selectors_dir()
-    if os.path.exists(sel_dir):
-        try:
-            for fname in os.listdir(sel_dir):
-                if not fname.endswith(".json"):
-                    continue
-                with open(os.path.join(sel_dir, fname), "r", encoding="utf-8") as f:
-                    sel = json.load(f)
-                wid = fname.replace(".json", "")
-                # domain 추출: URL에서 가져오거나 wid 사용
-                domain = sel.get("url", wid)
-                name = sel.get("name", wid)
-                upload_selectors(domain, name, sel)
-        except Exception:
-            pass
+    # 3) 셀렉터 업로드 — v1.5.38 부터 제거됨
+    # 기존: 앱 시작 시 로컬 셀렉터를 전부 서버에 upsert 했음
+    # 문제: 클라이언트마다 옛 로컬 캐시로 서버를 덮어써 개발자가 수정한
+    #       최신 셀렉터가 롤백되는 현상 발생 (세화 2026-04-20 사례)
+    # 방침: 셀렉터 기여는 "진단 버튼" / "AI 분석 성공" 등 명시적 경로만 허용.
+    #       주기적 대량 upsert 는 제거.
 
 
 def sync_cloud_to_local():
@@ -445,7 +435,7 @@ def sync_cloud_to_local():
     if not is_enabled():
         return
 
-    data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
+    data_dir = paths.get_data_dir()
 
     # 1) 약품 캐시 보강 - 서버에만 있는 약품을 로컬에 추가
     drug_cache_path = os.path.join(data_dir, "drug_cache.json")

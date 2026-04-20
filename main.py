@@ -541,8 +541,13 @@ def main():
 
     # v1.5.35: 기존 {app}\config 데이터를 %APPDATA%\PharmAuto 로 일회성 이전
     # 로거/다른 core 모듈보다 먼저 — 모두 이 경로에 의존
-    from core.paths import migrate_from_legacy_install, snapshot_config_daily
+    from core.paths import (
+        migrate_from_legacy_install, snapshot_config_daily,
+        invalidate_selectors_cache_once,
+    )
     migrate_from_legacy_install()
+    # v1.5.38: 오염된 로컬 셀렉터 캐시 일회 삭제 → 서버에서 깨끗이 fetch
+    invalidate_selectors_cache_once()
 
     # 단일 인스턴스 보장 — 이미 실행 중이면 기존 창 복원
     if _is_already_running():

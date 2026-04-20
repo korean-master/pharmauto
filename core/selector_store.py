@@ -9,7 +9,7 @@ import os
 import re
 import threading
 
-SELECTORS_DIR = os.path.join(os.path.dirname(__file__), "..", "config", "selectors")
+from core import paths
 
 
 def _safe_filename(wid: str) -> str:
@@ -17,8 +17,7 @@ def _safe_filename(wid: str) -> str:
 
 
 def _local_path(wid: str) -> str:
-    os.makedirs(SELECTORS_DIR, exist_ok=True)
-    return os.path.join(SELECTORS_DIR, f"{_safe_filename(wid)}.json")
+    return os.path.join(paths.get_selectors_dir(), f"{_safe_filename(wid)}.json")
 
 
 def _extract_domain(wid: str, selectors: dict = None, url: str = "") -> str:
@@ -100,11 +99,12 @@ def save_selectors(wid: str, selectors: dict, upload: bool = True):
 
 def list_cached() -> list[str]:
     """로컬에 캐시된 도매상 ID 목록을 반환한다."""
-    if not os.path.exists(SELECTORS_DIR):
+    d = paths.get_selectors_dir()
+    if not os.path.exists(d):
         return []
     return [
         f.replace(".json", "")
-        for f in os.listdir(SELECTORS_DIR)
+        for f in os.listdir(d)
         if f.endswith(".json")
     ]
 

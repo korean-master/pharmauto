@@ -210,3 +210,46 @@ def _prune_backups(backup_root: str, keep: int) -> None:
             shutil.rmtree(os.path.join(backup_root, old))
         except OSError:
             pass
+
+
+# ---------------------------------------------------------------------------
+# 일회성 셀렉터 캐시 invalidate (v1.5.38)
+# ---------------------------------------------------------------------------
+
+_SELECTORS_INVALIDATE_MARKER = ".selectors_invalidated_v1538"
+
+
+def invalidate_selectors_cache_once() -> int:
+    """v1.5.38 첫 실행 시 로컬 selector 캐시를 비운다 (일회성).
+
+    배경: v1.5.37 까지 `sync_local_to_cloud()` 가 로컬 셀렉터를 서버에
+    무조건 upsert 해서, 낡은 로컬 파일이 서버 최신본을 덮어쓰는 사고 발생
+    (세화 사례). v1.5.38 에서 업로드 로직은 제거했지만, 기존 오염된 로컬
+    캐시도 한 번 비워줘야 다음 주문 시 서버에서 깨끗하게 fetch 된다.
+
+    Returns: 삭제된 파일 개수. 이미 실행됐으면 -1.
+    """
+    marker = os.path.join(get_user_data_root(), _SELECTORS_INVALIDATE_MARKER)
+    if os.path.exists(marker):
+        return -1
+
+    count = 0
+    sel_dir = get_selectors_dir()
+    try:
+        for name in os.listdir(sel_dir):
+            if name.endswith(".json"):
+                try:
+                    os.remove(os.path.join(sel_dir, name))
+                    count += 1
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+    try:
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write(datetime.now().isoformat())
+    except OSError:
+        pass
+
+    return count
