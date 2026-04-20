@@ -1151,16 +1151,30 @@ class OrderTab(QWidget):
             QMessageBox.information(self, "알림", "선택된 약품이 없습니다.")
             return
 
+        # 비율 분배 설정 시 확인창 전에 미리 재분배 → 사용자가 실제 분배 결과를 본다
+        from core.order_engine import (
+            is_cart_only_mode, _get_split_settings, _distribute_items,
+        )
+        split = _get_split_settings()
+        if split["mode"] == "even" and len(split["wholesalers"]) >= 2:
+            items = _distribute_items(
+                items, split["wholesalers"], split.get("ratios", {})
+            )
+            # 재분배 후 wholesaler_name 동기화 (콤보 표시가 옛 이름이면 UI 헷갈림)
+            ws_map = _load_json("wholesalers.json")
+            for it in items:
+                wid = it.get("wholesaler_id", "")
+                it["wholesaler_name"] = ws_map.get(wid, {}).get("name", wid)
+
         summary = {}
         for item in items:
             ws_name = item["wholesaler_name"]
             summary.setdefault(ws_name, []).append(item)
 
-        from core.order_engine import is_cart_only_mode
         order_mode = "장바구니 담기" if is_cart_only_mode() else "자동 주문 확정"
         msg = f"다음과 같이 주문하시겠습니까? ({order_mode})\n\n"
         for ws_name, ws_items in summary.items():
-            msg += f"[{ws_name}]\n"
+            msg += f"[{ws_name}] {len(ws_items)}개\n"
             for it in ws_items:
                 msg += f"  - {it['drug_name']}\n"
             msg += "\n"
@@ -1507,6 +1521,20 @@ class OrderTab(QWidget):
                     elif status == "cart_only":
                         item.setText("장바구니완료")
                         item.setForeground(QColor(_BLUE))
+                    elif status == "cart_unverified":
+                        item.setText("⚠️ 확인 필요")
+                        item.setForeground(QColor(_RED))
+                        item.setToolTip(
+                            "담김 자동 검증 실패 — 도매상 사이트에서 "
+                            "장바구니에 실제로 담겼는지 직접 확인 필요"
+                        )
+                    elif status == "ordered_unverified":
+                        item.setText("⚠️ 주문 확인 필요")
+                        item.setForeground(QColor(_RED))
+                        item.setToolTip(
+                            "주문은 실행됐으나 담김 검증 실패 — 도매상 사이트에서 "
+                            "실제 주문 내역 확인 필요"
+                        )
                     elif status == "out_of_stock":
                         item.setText("품절")
                         item.setForeground(QColor(_ORANGE))

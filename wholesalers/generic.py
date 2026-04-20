@@ -1195,7 +1195,21 @@ DOM 뼈대:
         }
         return parts.join(' > ');
       };
-      const report = { url: location.href, title: document.title, tables: [], buttons_with_text: [], inputs: [], images_likely_buttons: [], cart_indicators: [] };
+      // 개인정보/비밀 필드 값은 마스킹 (id/pw input, 환자명 등)
+      const _sanitize = (html) => {
+        if (!html) return '';
+        return html
+          .replace(/value="[^"]*"/gi, 'value=""')
+          .replace(/value='[^']*'/gi, "value=''")
+          .replace(/<input([^>]*type\s*=\s*["']?password[^>]*)>/gi, '<input$1 value="">');
+      };
+      const report = {
+        url: location.href, title: document.title,
+        tables: [], buttons_with_text: [], inputs: [],
+        images_likely_buttons: [], cart_indicators: [],
+        sample_rows_html: [],            // 각 테이블 첫 3행 outerHTML
+        row_last_cell_clickables: [],    // 각 row 마지막 td의 클릭 가능 요소
+      };
       document.querySelectorAll('table').forEach((tbl, ti) => {
         const ths = Array.from(tbl.querySelectorAll('thead th, thead td')).map(h => h.textContent.trim().slice(0, 20));
         const firstTh = ths.length ? ths : Array.from(tbl.querySelectorAll('tr:first-child th, tr:first-child td')).map(h => h.textContent.trim().slice(0, 20));
@@ -1208,6 +1222,34 @@ DOM 뼈대:
           has_button: !!td.querySelector('button, a, [onclick]'),
         })) : [];
         report.tables.push({ idx: ti, css: _cssPath(tbl), headers: firstTh.slice(0, 20), row_count: bodyRows.length, first_row_cells: rowCells.slice(0, 20) });
+        // 각 테이블에서 데이터 있는 row 최대 3개의 outerHTML 통째로 수집
+        const dataRows = Array.from(bodyRows).filter(tr =>
+          tr.querySelectorAll('td').length >= 2
+        ).slice(0, 3);
+        dataRows.forEach((tr, ri) => {
+          report.sample_rows_html.push({
+            table_idx: ti, row_idx: ri,
+            html: _sanitize((tr.outerHTML || '').slice(0, 3000)),
+          });
+          // 마지막 td 의 모든 clickable 요소 수집 (담기 버튼 후보)
+          const lastTd = tr.querySelector('td:last-child');
+          if (lastTd) {
+            lastTd.querySelectorAll('a, button, img, input, [onclick]').forEach(el => {
+              if (report.row_last_cell_clickables.length >= 30) return;
+              report.row_last_cell_clickables.push({
+                table_idx: ti, row_idx: ri,
+                tag: el.tagName.toLowerCase(),
+                css: _cssPath(el),
+                outer_html: _sanitize((el.outerHTML || '').slice(0, 500)),
+                onclick: (el.getAttribute('onclick') || '').slice(0, 200),
+                href: (el.getAttribute('href') || '').slice(0, 200),
+                alt: (el.getAttribute('alt') || '').slice(0, 40),
+                src: (el.getAttribute('src') || '').slice(0, 100),
+                text: (el.textContent || '').trim().slice(0, 30),
+              });
+            });
+          }
+        });
       });
       const btnKeywords = ['담기', '장바구니', '추가', '구매', '주문'];
       document.querySelectorAll('button, a, input[type="button"], input[type="submit"], input[type="image"], span[onclick], div[onclick]').forEach(el => {
@@ -1241,16 +1283,36 @@ DOM 뼈대:
           css: _cssPath(el), in_row: !!el.closest('tr'),
         });
       });
-      const cartKw = ['장바구니', '카트', 'cart', '담긴', '선택'];
-      document.querySelectorAll('span, em, strong, b, div, td, a').forEach(el => {
+      // 장바구니 카운트 후보 — 키워드 + "N건/N개" 패턴 + 장바구니 테이블 tbody tr 개수
+      const cartKw = ['장바구니', '카트', 'cart', '담긴', '선택', 'bag', '건', '개'];
+      const numPattern = /(\d+)\s*(건|개|items?|ea)/i;
+      document.querySelectorAll('span, em, strong, b, div, td, a, p').forEach(el => {
+        if (report.cart_indicators.length >= 20) return;
         const t = (el.textContent || '').trim();
-        if (t.length > 30 || t.length < 1) return;
-        if (cartKw.some(k => t.includes(k) || (el.className && el.className.includes && el.className.includes('cart')))) {
+        if (t.length > 40 || t.length < 1) return;
+        const numMatch = t.match(numPattern);
+        const hasKw = cartKw.some(k => t.includes(k));
+        const hasCartClass = el.className && typeof el.className === 'string' && /bag|cart/i.test(el.className);
+        if (numMatch || (hasKw && /\d/.test(t)) || hasCartClass) {
           const nums = t.match(/(\d+)/);
-          if (nums) report.cart_indicators.push({ css: _cssPath(el), text: t.slice(0, 40), number: nums[1] });
+          report.cart_indicators.push({
+            css: _cssPath(el), text: t.slice(0, 40),
+            number: nums ? nums[1] : '',
+            match_type: numMatch ? 'num+unit' : (hasCartClass ? 'cart_class' : 'keyword'),
+          });
         }
       });
-      report.cart_indicators = report.cart_indicators.slice(0, 15);
+      // 장바구니 테이블 후보 — 클래스/id 에 bag/cart 포함된 테이블
+      document.querySelectorAll('[class*="bag"] table, [id*="bag"] table, [class*="cart"] table, [id*="cart"] table').forEach((tbl, i) => {
+        if (i >= 5) return;
+        const rows = tbl.querySelectorAll('tbody tr, tr');
+        report.cart_indicators.push({
+          css: _cssPath(tbl) + ' tbody tr',
+          text: `[cart-table-rows=${rows.length}]`,
+          number: String(rows.length),
+          match_type: 'cart_table_rows',
+        });
+      });
       return report;
     })()
     """
@@ -1331,14 +1393,21 @@ DOM 뼈대:
     # ────── _get_cart_count 오버라이드 (셀렉터 주입 지원) ──────
 
     async def _get_cart_count(self) -> int:
-        """저장된 셀렉터에 cart_count_sel이 있으면 우선 사용, 없으면 부모 범용 로직."""
+        """저장된 셀렉터에 cart_count_sel/cart_rows_sel 이 있으면 우선 사용.
+
+        - cart_count_sel: 단일 텍스트 요소에서 숫자 추출 (예: "장바구니 3건" 배지)
+        - cart_rows_sel : locator 매칭 요소 수 반환 (예: 장바구니 테이블 tbody tr)
+        둘 다 없으면 부모 범용 로직 fallback.
+        """
         if not self._page:
             return -1
         try:
             table = self._selectors.get("table", {}) if hasattr(self, "_selectors") else {}
             custom_sel = table.get("cart_count_sel")
+            rows_sel = table.get("cart_rows_sel")
         except Exception:
             custom_sel = None
+            rows_sel = None
 
         if custom_sel:
             try:
@@ -1349,6 +1418,12 @@ DOM 뼈대:
                     nums = re.sub(r'[^\d]', '', text)
                     if nums:
                         return int(nums)
+            except Exception:
+                pass
+
+        if rows_sel:
+            try:
+                return await self._page.locator(rows_sel).count()
             except Exception:
                 pass
 
