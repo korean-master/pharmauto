@@ -76,6 +76,10 @@ def get_screenshots_dir() -> str:
     return _ensured("screenshots")
 
 
+def get_traces_dir() -> str:
+    return _ensured("traces")
+
+
 def get_backup_dir() -> str:
     return _ensured("backup")
 

@@ -99,6 +99,22 @@ def _cloud_upload_units(insurance_code: str, pack_sizes: list[int]):
     threading.Thread(target=_upload, daemon=True).start()
 
 
+def _prune_traces(traces_dir: str, keep: int = 10) -> None:
+    """오래된 trace zip 파일을 keep 개만 남기고 삭제한다."""
+    try:
+        files = sorted(
+            [f for f in os.listdir(traces_dir) if f.endswith(".zip")],
+            reverse=True,
+        )
+        for old in files[keep:]:
+            try:
+                os.remove(os.path.join(traces_dir, old))
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 # ────────────────────── 베이스 클래스 ──────────────────────
 
 class WholesalerBase(ABC):
@@ -118,9 +134,11 @@ class WholesalerBase(ABC):
         self.user_id = config.get("id", "")
         self.password = config.get("pw", "")
         self._browser = None
+        self._context = None
         self._page = None
         self._playwright = None
         self._progress_callback = None
+        self._trace_path = None
 
     def set_progress_callback(self, callback):
         self._progress_callback = callback
@@ -146,21 +164,56 @@ class WholesalerBase(ABC):
                     break
 
         try:
+            from datetime import datetime
             self._playwright = await async_playwright().start()
             self._browser = await self._playwright.chromium.launch(headless=headless)
-            self._page = await self._browser.new_page()
+            self._context = await self._browser.new_context()
+            self._page = await self._context.new_page()
+            # trace 시작 (오류 시에만 저장, 정상 완료 시 _close에서 폐기)
+            ws_slug = self.name.replace(" ", "_") or "ws"
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self._trace_path = os.path.join(
+                paths.get_traces_dir(), f"{ws_slug}_{ts}.zip"
+            )
+            await self._context.tracing.start(screenshots=True, snapshots=True)
         except Exception as e:
             print(f"[Playwright 오류] {e}")
             raise RuntimeError("브라우저 연결에 실패했습니다. 프로그램을 재시작해 주세요.")
 
-    async def _close(self):
+    async def _close(self, keep_trace: bool = False):
+        if self._context:
+            try:
+                if keep_trace and self._trace_path:
+                    await self._context.tracing.stop(path=self._trace_path)
+                    self._progress(f"[Trace] 저장됨 → {self._trace_path}")
+                    _prune_traces(os.path.dirname(self._trace_path))
+                    # 백그라운드로 Supabase 업로드
+                    try:
+                        from core.cloud import upload_trace_async
+                        upload_trace_async(
+                            self._trace_path,
+                            wid=getattr(self, "WID", "") or getattr(self, "_wid", "") or "",
+                            wholesaler_name=self.name,
+                        )
+                    except Exception:
+                        pass
+                else:
+                    await self._context.tracing.stop()
+            except Exception:
+                pass
+            try:
+                await self._context.close()
+            except Exception:
+                pass
         if self._browser:
             await self._browser.close()
         if self._playwright:
             await self._playwright.stop()
+        self._context = None
         self._browser = None
         self._page = None
         self._playwright = None
+        self._trace_path = None
 
     async def _close_popup(self):
         """공통 팝업/알림/모달 닫기. 페이지에 떠 있는 팝업을 자동 처리한다."""
@@ -242,6 +295,7 @@ class WholesalerBase(ABC):
             "failed_items": [],
         }
         prefix = self.name.replace(" ", "_").lower()
+        _has_error = False
 
         try:
             # 1. 로그인
@@ -369,6 +423,7 @@ class WholesalerBase(ABC):
                 self._progress(f"주문 완료! {success_count}개 품목{suffix}")
 
         except Exception as e:
+            _has_error = True
             order_result["message"] = f"오류 발생: {e}"
             self._progress(f"오류: {e}")
             try:
@@ -377,7 +432,7 @@ class WholesalerBase(ABC):
                 pass
 
         finally:
-            await self._close()
+            await self._close(keep_trace=_has_error)
 
         return order_result
 
@@ -392,11 +447,13 @@ class WholesalerBase(ABC):
         """
         # 테스트용 약품 (범용 - 거의 모든 도매상에 있는 약)
         TEST_CODES = ["645601261", "643501890", "646201260"]
+        _has_error = False
 
         try:
             # 1. 로그인
             self._progress("연동 테스트: 로그인 중...")
             if not await self.login_async(headless=headless):
+                _has_error = True
                 return {"success": False, "stage": "login", "message": "로그인 실패"}
 
             # 2. 장바구니 테스트 (테스트 약품으로 시도)
@@ -415,6 +472,7 @@ class WholesalerBase(ABC):
                     continue
 
             if not cart_ok:
+                _has_error = True
                 return {"success": False, "stage": "cart", "message": "장바구니 담기 실패"}
 
             # 3. 장바구니 비우기 — 테스트 약품이 남으면 실주문 위험
@@ -439,9 +497,10 @@ class WholesalerBase(ABC):
             return {"success": True, "stage": "done", "message": "연동 정상"}
 
         except Exception as e:
+            _has_error = True
             return {"success": False, "stage": "error", "message": str(e)}
         finally:
-            await self._close()
+            await self._close(keep_trace=_has_error)
 
     async def _clear_cart(self):
         """장바구니를 비운다. 서브클래스에서 오버라이드 가능."""

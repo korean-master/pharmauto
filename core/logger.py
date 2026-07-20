@@ -78,6 +78,20 @@ def upload_error(level: str, message: str, context: dict | None = None):
                 pharmacy_code = get_activation_code() or ""
             except Exception:
                 pass
+            pharmacy_name = ""
+            try:
+                from core import paths as _paths
+                import json as _json
+                with open(_paths.settings_path(), "r", encoding="utf-8") as _f:
+                    pharmacy_name = _json.load(_f).get("pharmacy_name", "")
+            except Exception:
+                pass
+            if not pharmacy_name:
+                import socket
+                pharmacy_name = socket.gethostname()
+
+            _ctx = dict(context or {})
+            _ctx["pharmacy_name"] = pharmacy_name
 
             requests.post(
                 _api_url("error_logs"),
@@ -86,8 +100,8 @@ def upload_error(level: str, message: str, context: dict | None = None):
                     "pharmacy_code": pharmacy_code,
                     "version": VERSION,
                     "level": level,
-                    "message": message[:500],
-                    "context": context or {},
+                    "message": f"[{pharmacy_name}] {message}"[:500],
+                    "context": _ctx,
                     "log_tail": log_tail[:5000],
                 },
                 timeout=5,

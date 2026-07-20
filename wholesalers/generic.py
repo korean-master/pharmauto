@@ -2985,7 +2985,8 @@ DOM 테이블 행 수 변화: {rows_txt}
             return report
         finally:
             # v1.5.41: 실패 시 마지막 화면 JPEG 스크린샷 (base64) 을 로그에 첨부
-            if not report.get("success"):
+            _onboard_failed = not report.get("success")
+            if _onboard_failed:
                 try:
                     b64 = await self._capture_screenshot_b64()
                     if b64:
@@ -2993,7 +2994,7 @@ DOM 테이블 행 수 변화: {rows_txt}
                 except Exception:
                     pass
             try:
-                await self._close()
+                await self._close(keep_trace=_onboard_failed)
             except Exception:
                 pass
 

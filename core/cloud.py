@@ -619,6 +619,15 @@ def upload_onboard_failure(
             pharmacy_code = get_activation_code() or ""
         except Exception:
             pass
+        pharmacy_name = ""
+        try:
+            with open(paths.settings_path(), "r", encoding="utf-8") as f:
+                pharmacy_name = json.load(f).get("pharmacy_name", "")
+        except Exception:
+            pass
+        if not pharmacy_name:
+            import socket
+            pharmacy_name = socket.gethostname()
 
         log_json = json.dumps(
             report.get("onboard_log", {}), ensure_ascii=False
@@ -628,12 +637,13 @@ def upload_onboard_failure(
             "version": VERSION,
             "level": "ONBOARDING_FAIL",
             "message": (
-                f"{name} ({wid}) 자동 온보딩 실패 — "
-                f"stage={report.get('stage','?')}: {report.get('message','')[:150]}"
+                f"{pharmacy_name} / {name} ({wid}) 자동 온보딩 실패 — "
+                f"stage={report.get('stage','?')}: {report.get('message','')[:120]}"
             ),
             "context": {
                 "wid": wid, "name": name, "url": url,
                 "stage": report.get("stage", ""),
+                "pharmacy_name": pharmacy_name,
             },
             "log_tail": log_json,
         }
@@ -647,3 +657,83 @@ def upload_onboard_failure(
     except Exception as e:
         print(f"[온보딩 실패] 업로드 오류: {e}")
         return False
+
+
+# ────────────────────── Playwright Trace 업로드 ──────────────────────
+
+_TRACE_MAX_BYTES = 8 * 1024 * 1024  # 8 MB 초과 시 업로드 스킵
+
+
+def upload_trace(trace_path: str, wid: str, wholesaler_name: str) -> bool:
+    """오류 Trace zip 파일을 error_logs 테이블에 업로드한다.
+
+    trace_path: 로컬에 저장된 .zip 파일 경로
+    백그라운드 스레드에서 호출되므로 예외를 삼킨다.
+    Returns: 업로드 성공 여부
+    """
+    if not is_enabled() or not os.path.exists(trace_path):
+        return False
+    try:
+        import base64, gzip
+        from core.version import VERSION
+        pharmacy_code = ""
+        try:
+            from core.auth import get_activation_code
+            pharmacy_code = get_activation_code() or ""
+        except Exception:
+            pass
+        pharmacy_name = ""
+        try:
+            with open(paths.settings_path(), "r", encoding="utf-8") as f:
+                pharmacy_name = json.load(f).get("pharmacy_name", "")
+        except Exception:
+            pass
+        if not pharmacy_name:
+            import socket
+            pharmacy_name = socket.gethostname()
+
+        raw = open(trace_path, "rb").read()
+        if len(raw) > _TRACE_MAX_BYTES:
+            print(f"[Trace] 파일이 너무 큽니다 ({len(raw)//1024}KB > 8MB) — 업로드 스킵")
+            return False
+
+        compressed = gzip.compress(raw, compresslevel=6)
+        b64 = base64.b64encode(compressed).decode("ascii")
+
+        payload = {
+            "pharmacy_code": pharmacy_code,
+            "version": VERSION,
+            "level": "TRACE_FILE",
+            "message": (
+                f"{pharmacy_name or pharmacy_code} / {wholesaler_name} 연동 오류 trace"
+            ),
+            "context": {
+                "wid": wid,
+                "wholesaler_name": wholesaler_name,
+                "pharmacy_name": pharmacy_name,
+                "trace_filename": os.path.basename(trace_path),
+                "raw_size_kb": len(raw) // 1024,
+            },
+            "log_tail": b64,
+        }
+        r = requests.post(
+            _api_url("error_logs"),
+            headers=_headers(),
+            json=payload,
+            timeout=30,
+        )
+        return 200 <= r.status_code < 300
+    except Exception as e:
+        print(f"[Trace] 업로드 오류: {e}")
+        return False
+
+
+def upload_trace_async(trace_path: str, wid: str, wholesaler_name: str) -> None:
+    """upload_trace 를 백그라운드 스레드로 호출한다."""
+    def _run():
+        ok = upload_trace(trace_path, wid, wholesaler_name)
+        if ok:
+            print(f"[Trace] 서버 업로드 완료: {os.path.basename(trace_path)}")
+        else:
+            print(f"[Trace] 서버 업로드 실패 (로컬 파일은 유지됨)")
+    threading.Thread(target=_run, daemon=True).start()

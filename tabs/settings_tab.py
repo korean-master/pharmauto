@@ -547,6 +547,15 @@ class SettingsTab(QWidget):
         open_dir_btn.clicked.connect(self._open_install_dir)
         upd_btn_row.addWidget(open_dir_btn)
 
+        open_trace_btn = QPushButton("오류 Trace 폴더")
+        open_trace_btn.setStyleSheet(btn_primary(bg="#7C3AED", hover="#6D28D9"))
+        open_trace_btn.setToolTip(
+            "도매상 연동 오류 시 자동 저장된 Trace 파일 폴더를 엽니다.\n"
+            "오류 발생 후 이 폴더의 .zip 파일을 개발자에게 전달해 주세요."
+        )
+        open_trace_btn.clicked.connect(self._open_traces_dir)
+        upd_btn_row.addWidget(open_trace_btn)
+
         self.upd_status_label = QLabel("")
         self.upd_status_label.setStyleSheet(DESCRIPTION)
         upd_btn_row.addWidget(self.upd_status_label)
@@ -2607,6 +2616,23 @@ class SettingsTab(QWidget):
                 QMessageBox.warning(self, "폴더 없음", "설치 폴더를 찾지 못했습니다.")
                 return
             subprocess.Popen(["explorer", target])
+        except Exception as e:
+            QMessageBox.warning(self, "열기 실패", f"탐색기를 열 수 없습니다: {e}")
+
+    def _open_traces_dir(self):
+        """도매상 오류 Trace 폴더를 탐색기로 연다."""
+        import subprocess
+        try:
+            traces_dir = paths.get_traces_dir()
+            files = [f for f in os.listdir(traces_dir) if f.endswith(".zip")]
+            if not files:
+                QMessageBox.information(
+                    self, "Trace 없음",
+                    "아직 저장된 오류 Trace 파일이 없습니다.\n"
+                    "도매상 연동 오류 발생 시 이 폴더에 .zip 파일이 자동 생성됩니다."
+                )
+                return
+            subprocess.Popen(["explorer", traces_dir])
         except Exception as e:
             QMessageBox.warning(self, "열기 실패", f"탐색기를 열 수 없습니다: {e}")
 

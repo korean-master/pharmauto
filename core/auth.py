@@ -130,6 +130,11 @@ def activate(code: str) -> dict:
     return {"success": True, "message": "활성화 성공"}
 
 
+def get_activation_code() -> str:
+    """현재 저장된 활성화 코드를 반환한다. 없으면 빈 문자열."""
+    return get_auth_info().get("code", "")
+
+
 def deactivate():
     """활성화를 해제한다."""
     p = paths.auth_path()

@@ -142,6 +142,7 @@ class AnamWholesaler(WholesalerBase):
             return _fail("selectors",
                          f"필수 셀렉터 누락: {', '.join(missing)}")
 
+        _error = False
         try:
             await self._launch(headless=headless)
             page = self._page
@@ -557,11 +558,12 @@ class AnamWholesaler(WholesalerBase):
             return report
 
         except Exception as e:
+            _error = True
             return _fail("exception", f"예외: {str(e)[:200]}")
 
         finally:
             try:
-                await self._close()
+                await self._close(keep_trace=_error)
             except Exception:
                 pass
 
