@@ -173,12 +173,29 @@ def place_orders(order_items: list[dict], progress_callback=None,
         [{"wholesaler_id", "wholesaler_name", "items", "success", "message",
           "failed_items"}, ...]
     """
+    # v1.5.40: 연동 실패 상태(onboard_status=failed) 도매상 필터링
+    from core.wholesaler_state import is_failed as _ws_is_failed
+
     # 주문 분배 적용
     split = _get_split_settings()
     if split["mode"] == "even" and len(split["wholesalers"]) >= 2:
-        order_items = _distribute_items(
-            order_items, split["wholesalers"], split.get("ratios", {})
-        )
+        verified_ws = [w for w in split["wholesalers"] if not _ws_is_failed(w)]
+        excluded_ws = [w for w in split["wholesalers"] if _ws_is_failed(w)]
+        if excluded_ws and progress_callback:
+            for w in excluded_ws:
+                progress_callback(
+                    f"⚠️ {w} 연동 실패 상태 — 분배에서 제외됨"
+                )
+        if len(verified_ws) >= 2:
+            order_items = _distribute_items(
+                order_items, verified_ws, split.get("ratios", {})
+            )
+        elif len(verified_ws) == 1:
+            # 검증된 도매상이 하나만 남으면 모두 그쪽으로
+            only = verified_ws[0]
+            for it in order_items:
+                it["wholesaler_id"] = only
+        # 0개: 분배 불가 — 개별 루프에서 각자 실패 결과로 기록됨
 
     wholesalers = _load_wholesalers()
     groups = group_by_wholesaler(order_items)
@@ -187,6 +204,24 @@ def place_orders(order_items: list[dict], progress_callback=None,
     for wid, items in groups.items():
         ws = wholesalers.get(wid, {})
         ws_name = ws.get("name", wid)
+
+        # v1.5.40: 연동 실패 상태 도매상은 주문 실행 안 함 (실패 결과만 기록)
+        if _ws_is_failed(wid):
+            if progress_callback:
+                progress_callback(
+                    f"⚠️ {ws_name} 연동 실패 상태 — 주문 건너뜀"
+                )
+            results.append({
+                "wholesaler_id": wid,
+                "wholesaler_name": ws_name,
+                "items": items,
+                "success": False,
+                "message": "연동 실패 상태 — 설정 탭에서 재연동 필요",
+                "failed_items": items,
+            })
+            # 이력은 실패로만 저장 (주문은 실제로 나가지 않음)
+            _save_order_history(items, wid, ws_name, status="failed")
+            continue
 
         ws_config = {**ws, "id": ws.get("id", ""), "pw": ws.get("pw", "")}
         order_result = _execute_wholesaler_order(
@@ -238,12 +273,34 @@ def place_orders(order_items: list[dict], progress_callback=None,
 
         # ws_results에서 품절 여부 확인
         oos_codes = set()
+        retryable_codes = set()  # v1.5.43: 품절 아닌 실패 (다른 도매상 재시도)
+        invalidate_this_ws = False
         for r in ws_results:
             code = r.get("insurance_code")
             if not code:
                 continue
             if r.get("out_of_stock"):
                 oos_codes.add(code)
+            elif r.get("retryable"):
+                retryable_codes.add(code)
+            if r.get("invalidate_selectors"):
+                invalidate_this_ws = True
+
+        # v1.5.43: 구 포맷 셀렉터 감지 시 onboard_status=failed 전환 (백그라운드 재연동 유도)
+        if invalidate_this_ws:
+            try:
+                from core.wholesaler_state import set_onboard_status, STATUS_FAILED
+                set_onboard_status(
+                    wid, STATUS_FAILED,
+                    stage="schema",
+                    error="셀렉터가 구 포맷 (v1.5.43 이전) — 재연동 필요"
+                )
+                if progress_callback:
+                    progress_callback(
+                        f"⚠️ {ws_name} 셀렉터 구 포맷 감지 — 다음 실행 시 재연동 요청"
+                    )
+            except Exception:
+                pass
 
         success_items = [
             it for it in items
@@ -277,6 +334,12 @@ def place_orders(order_items: list[dict], progress_callback=None,
         # 도매상 연결 상태 갱신
         _update_ws_status(wid, "정상" if success else "연동 오류")
 
+        # v1.5.43: retryable 아이템 수집 (현재 도매상에서 온 것)
+        retryable_items_local = [
+            it for it in items
+            if it.get("insurance_code", "") in retryable_codes
+        ]
+
         results.append({
             "wholesaler_id": wid,
             "wholesaler_name": ws_name,
@@ -286,6 +349,7 @@ def place_orders(order_items: list[dict], progress_callback=None,
             "message": message or ("주문 완료" if success else "주문 실패"),
             "failed_items": failed,
             "oos_items": oos_items,
+            "retryable_items": retryable_items_local,  # v1.5.43
         })
 
     # ── 품절 항목 자동 재주문 (다른 도매상으로) ──
@@ -296,12 +360,31 @@ def place_orders(order_items: list[dict], progress_callback=None,
             it["_original_ws_name"] = r["wholesaler_name"]
             all_oos.append(it)
 
+    # v1.5.43: retryable 항목 수집 (품절 아닌 일시 실패)
+    all_retryable = []
+    for r in results:
+        for it in r.get("retryable_items", []):
+            it["_original_wholesaler"] = r["wholesaler_id"]
+            it["_original_ws_name"] = r["wholesaler_name"]
+            all_retryable.append(it)
+
     retry_results = []
     if all_oos:
         if progress_callback:
             progress_callback(f"품절 {len(all_oos)}건 → 대체 도매상 재주문 시도...")
         retry_results = _retry_oos_items(all_oos, wholesalers, progress_callback,
                                          dry_run=dry_run)
+
+    # v1.5.43: retryable 항목 재시도 (_retry_oos_items 로직 재활용)
+    #          out_of_stock 과 경로는 같지만 "원래 도매상 대신" 시도한다는 점만 다름
+    if all_retryable:
+        if progress_callback:
+            progress_callback(
+                f"일시 실패 {len(all_retryable)}건 → 다른 도매상 재시도..."
+            )
+        retry_results.extend(_retry_oos_items(
+            all_retryable, wholesalers, progress_callback, dry_run=dry_run
+        ))
 
     return results, retry_results
 
@@ -310,12 +393,14 @@ def place_orders(order_items: list[dict], progress_callback=None,
 _WHOLESALER_CLASSES = {
     "geo": ("wholesalers.jioeyoung", "JioeyoungWholesaler"),
     "baekje": ("wholesalers.baekje", "BaekjeWholesaler"),
+    "anam": ("wholesalers.anam", "AnamWholesaler"),
 }
 
 # URL 도메인 → 전용 클래스 매핑 (wid가 다를 때 폴백)
 _URL_DOMAIN_MAP = {
     "geoweb": "geo",
     "ibjp": "baekje",
+    "anampharm": "anam",
 }
 
 
@@ -405,10 +490,17 @@ def _retry_oos_items(oos_items: list[dict], wholesalers: dict,
         for wid, ws in sorted_ws:
             if wid == original_wid:
                 continue
+            # v1.5.43: 연동 실패 상태 도매상도 재시도 대상에서 제외
+            try:
+                from core.wholesaler_state import is_failed
+                if is_failed(wid):
+                    continue
+            except Exception:
+                pass
 
             ws_name = ws.get("name", wid)
             if progress_callback:
-                progress_callback(f"  품절 재주문: {drug_name} → {ws_name}")
+                progress_callback(f"  품절/재시도: {drug_name} → {ws_name}")
 
             ws_config = {**ws, "id": ws.get("id", ""), "pw": ws.get("pw", "")}
             order_result = _execute_wholesaler_order(

@@ -1,0 +1,36 @@
+{
+  "_note": "백제약품 주문 셀렉터 — v1.5.46 수집 (2026-04-23)",
+  "wid": "baekje",
+  "name": "백제약품",
+  "url": "http://www.ibjp.kr/dist/comOrd",
+  "login_url": "http://www.ibjp.kr/dist/login",
+
+  "login": {
+    "id_input": "input[placeholder*=\"아이디\"]",
+    "pw_input": "input[type=\"password\"]",
+    "login_btn": ".login_btn"
+  },
+
+  "search": {
+    "search_input": "input[placeholder*=\"품목명\"]",
+    "search_btn": ""
+  },
+
+  "table": {
+    "layout_mode": "row_cart_btn",
+    "result_rows": "tbody.q-virtual-scroll__content tr",
+    "cart_btn_in_row": "td.td-add button",
+    "qty_input_in_row": "td.td-qty input[type=\"text\"]",
+    "cart_rows_sel": ".cart_wrap tbody tr:not(.no-date)",
+    "code_col_idx": 0,
+    "name_col_idx": 1,
+    "unit_col_idx": 2,
+    "stock_col_idx": 5,
+    "price_col_idx": 7,
+    "schema_version": "v1.5.46"
+  },
+
+  "confirm": {
+    "confirm_btn": "button:has-text(\"주문등록\")"
+  }
+}

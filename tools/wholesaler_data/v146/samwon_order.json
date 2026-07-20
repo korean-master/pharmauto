@@ -1,0 +1,35 @@
+{
+  "_note": "삼원약품 주문 셀렉터 — v1.5.46 수집 (2026-04-23)",
+  "wid": "samwon",
+  "name": "삼원약품",
+  "url": "https://www.pharmbox.co.kr/",
+
+  "login": {
+    "id_input": "#P_H_USER_ID",
+    "pw_input": "#P_H_PWD",
+    "login_btn": ".btn-login"
+  },
+
+  "search": {
+    "search_input": "#P_SRH_KEY",
+    "search_btn": "#f_srh_pharm .search-btn"
+  },
+
+  "table": {
+    "layout_mode": "row_cart_btn",
+    "result_rows": "tr[id^=\"PD_PB_LIST_\"]",
+    "cart_btn_in_row": "td:last-child > button",
+    "qty_input_in_row": "input[type=\"text\"]",
+    "cart_rows_sel": "#PD_CART_LIST tr",
+    "code_col_idx": null,
+    "name_col_idx": 2,
+    "unit_col_idx": 3,
+    "stock_col_idx": 6,
+    "price_col_idx": 5,
+    "schema_version": "v1.5.46"
+  },
+
+  "confirm": {
+    "confirm_btn": "button:has-text(\"주문접수\")"
+  }
+}

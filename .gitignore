@@ -63,3 +63,7 @@ data/db_structure*.json
 
 # Developer local build helpers
 _dev_build.bat
+
+# Build / install logs
+_build_log*.txt
+_install_log*.txt

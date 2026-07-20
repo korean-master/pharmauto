@@ -927,6 +927,666 @@ DOM 뼈대:
             self._progress(f"  AI 네비게이션 오류: {e}")
         return None
 
+    # v1.5.41 L3: 담기 버튼 AI Vision 폴백
+    async def _ai_suggest_cart_button(
+        self, result_table_idx: int, dom_report: dict
+    ) -> list:
+        """결과 행에서 담기 버튼을 AI Vision 에 질의 → 후보 리스트 반환.
+
+        full_onboard 의 휴리스틱 후보가 전원 실패했을 때만 호출된다.
+        반환 형식은 기존 candidates 와 호환되는 dict 리스트.
+        """
+        try:
+            from core.visual_agent import VisualAgent
+            from core.ai_analyzer import _load_api_key
+            agent = VisualAgent(api_key=_load_api_key(), wid=self._wid)
+            if not agent._can_call_ai():
+                return []
+            screenshot, _ = await agent._capture(self._page)
+
+            # result_table_idx 에 해당하는 sample row HTML 만 추출 (최대 3행)
+            sample_rows = [
+                s for s in dom_report.get("sample_rows_html", [])
+                if s.get("table_idx") == result_table_idx
+            ][:3]
+            rows_text = "\n\n".join(
+                f"Row {s.get('row_idx', 0)}:\n{s.get('html', '')[:2000]}"
+                for s in sample_rows
+            ) or "(row HTML 샘플 없음)"
+
+            prompt = f"""스크린샷은 약품 도매상 사이트의 **검색 결과 페이지** 입니다.
+각 결과 행(row)에서 "장바구니 담기", "담기", "구매하기", "주문" 에 해당하는
+**버튼의 CSS 셀렉터를 1개** 알려주세요.
+
+조건:
+- Playwright CSS 셀렉터 (문서에 맞는 `:has-text()` 허용, `:contains()` 금지)
+- 결과 테이블(인덱스 {result_table_idx})의 tbody tr 내부에 있는 버튼만
+- 텍스트 없는 이미지 버튼이면 src/alt 속성으로 정확히 지정
+- 한 행에 여러 버튼 있으면 가장 "담기/추가" 에 가까운 것
+
+다음은 결과 행 HTML 샘플:
+{rows_text}
+
+응답 (JSON만):
+{{"cart_button_css": "CSS 셀렉터", "in_row": true, "reason": "짧은 근거"}}
+또는 못 찾으면:
+{{"cart_button_css": null, "reason": "이유"}}"""
+
+            response = await agent._ask_ai(prompt, screenshot)
+            if not response:
+                return []
+            css = (response.get("cart_button_css") or "").strip()
+            if not css:
+                return []
+            # 기본 보안 필터 — javascript:, onclick= 금지
+            if "javascript:" in css.lower() or "onclick" in css.lower():
+                self._progress("  AI 제안 셀렉터 거부 (js 포함)")
+                return []
+            return [{
+                "css": css,
+                "in_row": bool(response.get("in_row", True)),
+                "source": f"ai[{str(response.get('reason', ''))[:20]}]",
+                "from_ai": True,
+            }]
+        except Exception as e:
+            self._progress(f"  AI 담기 버튼 폴백 오류: {e}")
+            return []
+
+    # v1.5.45: 실주문 담기 실패 자동 진단 업로드 (CART_FAIL_DIAG)
+    async def _upload_cart_fail_diagnostic(
+        self, insurance_code: str, drug_name: str,
+        used_cart_sel: str, layout_mode: str,
+        before_snap: list, after_snap: list | None,
+    ) -> None:
+        """담기 클릭은 했지만 DOM/시각 검증 실패 시 진단 업로드.
+        스크린샷 + 시도한 셀렉터 + before/after 테이블 변화 포함.
+        """
+        try:
+            from core.cloud import is_enabled, _api_url, _headers
+            if not is_enabled():
+                return
+            import requests as _req
+            from core.version import VERSION
+            pharmacy_code = ""
+            try:
+                from core.auth import get_activation_code
+                pharmacy_code = get_activation_code() or ""
+            except Exception:
+                pass
+
+            # 테이블 변화 요약
+            diff_summary = []
+            if after_snap:
+                for i in range(min(len(before_snap), len(after_snap))):
+                    b = before_snap[i].get("row_count", 0)
+                    a = after_snap[i].get("row_count", 0)
+                    if b != a:
+                        diff_summary.append(f"table[{i}]:{b}→{a}")
+            shot = await self._capture_screenshot_b64()
+
+            import json as _json
+            payload = {
+                "pharmacy_code": pharmacy_code,
+                "version": VERSION,
+                "level": "CART_FAIL_DIAG",
+                "message": (
+                    f"{self._wid} [{insurance_code}] 담기 검증 실패 "
+                    f"(layout={layout_mode})"
+                ),
+                "context": {
+                    "wid": self._wid,
+                    "insurance_code": insurance_code,
+                    "drug_name": drug_name[:60],
+                    "layout_mode": layout_mode,
+                    "used_cart_sel": used_cart_sel[:120],
+                    "table_diff": ",".join(diff_summary) or "no_change",
+                    "stored_selectors": {
+                        k: v for k, v in (
+                            self._selectors.get("table", {}) or {}
+                        ).items()
+                        if k in (
+                            "cart_btn_in_row", "global_cart_btn",
+                            "row_checkbox_in_row", "qty_input_in_row",
+                            "result_rows", "layout_mode", "schema_version",
+                            "row_fingerprint",
+                        )
+                    },
+                },
+                "log_tail": _json.dumps({
+                    "screenshot_b64": shot,
+                    "before_row_counts": [
+                        s.get("row_count", 0) for s in (before_snap or [])
+                    ][:10],
+                    "after_row_counts": [
+                        s.get("row_count", 0) for s in (after_snap or [])
+                    ][:10],
+                }, ensure_ascii=False)[:500000],
+            }
+            _req.post(
+                _api_url("error_logs"),
+                headers=_headers(),
+                json=payload,
+                timeout=10,
+            )
+        except Exception as e:
+            self._progress(f"  CART_FAIL_DIAG 업로드 실패: {e}")
+
+    # v1.5.44: 전역 담기 버튼 + row 체크박스 패턴 시험 담기 (세화 패턴)
+    async def _probe_global_cart_pattern(
+        self, dom_report: dict, result_table_idx: int,
+        result_rows_sel: str, qty_input_sel: str, drug_text: str,
+        _probe_log_cb=None,
+    ) -> dict | None:
+        """row 밖 전역 담기 버튼 + row 내부 체크박스/수량 조합 시험.
+
+        Returns: 성공 시 {"global_css", "checkbox_rel", "cart_table_idx"}, 실패 시 None.
+        """
+        globals_list = dom_report.get("global_cart_candidates", [])
+        if not globals_list:
+            return None
+        # 결과 테이블 내 체크박스 (row_relative_css 있는 것)
+        chk_candidates = [
+            c for c in dom_report.get("row_checkboxes", [])
+            if c.get("table_idx") == result_table_idx
+            and c.get("row_relative_css")
+        ]
+        checkbox_rel = chk_candidates[0]["row_relative_css"] if chk_candidates else ""
+
+        for g in globals_list:
+            btn_css = g.get("css", "")
+            if not btn_css:
+                continue
+            self._progress(
+                f"  패턴 B 시도: 전역 '{(g.get('text') or '')[:20]}' css={btn_css[:60]}"
+            )
+            entry = {
+                "source": f"global_btn[{(g.get('text') or '')[:20]}]",
+                "css": btn_css,
+                "checkbox_rel": checkbox_rel,
+                "result": "",
+            }
+            try:
+                # 1) 첫 행에 수량 입력
+                if qty_input_sel:
+                    try:
+                        await self._page.locator(qty_input_sel).first.fill("1")
+                        await self._page.wait_for_timeout(200)
+                    except Exception:
+                        pass
+                # 2) 첫 행 체크박스 확인 (이미 체크면 skip)
+                if checkbox_rel and result_rows_sel:
+                    try:
+                        first_row = self._page.locator(result_rows_sel).first
+                        chk = first_row.locator(checkbox_rel).first
+                        if await chk.count() > 0:
+                            if not await chk.is_checked():
+                                await chk.click(force=True)
+                                await self._page.wait_for_timeout(200)
+                    except Exception:
+                        pass
+
+                # 3) 전역 버튼 클릭 전 스냅샷
+                before_local = await self._snapshot_tables()
+
+                # 4) 전역 버튼 클릭
+                try:
+                    await self._page.locator(btn_css).first.click(
+                        timeout=3000, force=True
+                    )
+                except Exception as e:
+                    entry["result"] = "click_error"
+                    entry["error"] = str(e)[:120]
+                    if _probe_log_cb:
+                        _probe_log_cb(entry)
+                    continue
+
+                await self._page.wait_for_timeout(2000)
+
+                # 5) 확인 팝업 닫기
+                try:
+                    for ps in ['button:has-text("확인")',
+                               'button:has-text("닫기")']:
+                        p = self._page.locator(ps).first
+                        if await p.count() > 0 and await p.is_visible():
+                            await p.click(timeout=1500)
+                            await self._page.wait_for_timeout(400)
+                            break
+                except Exception:
+                    pass
+
+                # 6) DOM diff 검증
+                after_local = await self._snapshot_tables()
+                verify = await self._verify_cart_added(
+                    drug_name=drug_text, insurance_code="",
+                    before=before_local, after=after_local,
+                )
+                if verify.get("verified"):
+                    entry["result"] = "VERIFIED_GLOBAL"
+                    entry["cart_table_idx"] = verify.get("cart_table_idx", -1)
+                    if _probe_log_cb:
+                        _probe_log_cb(entry)
+                    return {
+                        "global_css": btn_css,
+                        "checkbox_rel": checkbox_rel,
+                        "cart_table_idx": verify.get("cart_table_idx", -1),
+                    }
+
+                # 7) L4 AI 시각 폴백 (DOM diff 못 잡는 경우)
+                visual_ok = await self._ai_visual_verify_cart(
+                    before_local, after_local, drug_text
+                )
+                if visual_ok:
+                    entry["result"] = "VERIFIED_GLOBAL_VISUAL"
+                    if _probe_log_cb:
+                        _probe_log_cb(entry)
+                    return {
+                        "global_css": btn_css,
+                        "checkbox_rel": checkbox_rel,
+                        "cart_table_idx": -1,
+                    }
+
+                entry["result"] = "not_verified"
+                entry["reason"] = verify.get("reason", "")[:80]
+                if _probe_log_cb:
+                    _probe_log_cb(entry)
+                # 다음 후보 시도 전 체크박스 해제 (중복 담기 방지)
+                if checkbox_rel and result_rows_sel:
+                    try:
+                        first_row = self._page.locator(result_rows_sel).first
+                        chk = first_row.locator(checkbox_rel).first
+                        if await chk.count() > 0 and await chk.is_checked():
+                            await chk.click(force=True)
+                            await self._page.wait_for_timeout(200)
+                    except Exception:
+                        pass
+            except Exception as e:
+                entry["result"] = "error"
+                entry["error"] = str(e)[:120]
+                if _probe_log_cb:
+                    _probe_log_cb(entry)
+        return None
+
+    # v1.5.43 DOM fingerprint: 사이트 구조 변경 자동 감지용 행 지문
+    async def _compute_row_fingerprint(self, row_handle) -> str:
+        """row 의 구조 지문 계산. JS 쪽 _rowFingerprint 와 동일 로직.
+
+        Python 에서 호출 시에는 row 의 element handle 을 인자로.
+        """
+        if not row_handle:
+            return ""
+        try:
+            return await row_handle.evaluate(r"""(tr) => {
+                if (!tr) return '';
+                const cells = tr.querySelectorAll('td');
+                const parts = [];
+                cells.forEach((td, i) => {
+                    const hasInput = !!td.querySelector('input:not([type="hidden"])');
+                    const hasImg = !!td.querySelector('img');
+                    const hasBtn = !!td.querySelector('a, button, [onclick], [role="button"], [role="link"]');
+                    const innerTags = Array.from(td.children).map(c => c.tagName.toLowerCase()).slice(0, 3).join(',');
+                    parts.push(`${i}:${hasInput?1:0}${hasImg?1:0}${hasBtn?1:0}:${innerTags}`);
+                });
+                return parts.join('|').slice(0, 300);
+            }""")
+        except Exception:
+            return ""
+
+    # v1.5.43: self-heal — 실행 시점에 발견한 새 셀렉터를 저장
+    def _update_row_selector(self, key: str, value: str) -> None:
+        """휴리스틱/AI 폴백이 성공시킨 row 내부 상대 CSS 를 저장해 다음 주문부터 L1 적중."""
+        if not value or not key:
+            return
+        try:
+            tbl = self._selectors.setdefault("table", {})
+            # bool/기타 타입 잔재 덮어씀
+            if tbl.get(key) == value:
+                return  # 변화 없음
+            tbl[key] = value
+            tbl["schema_version"] = "v1.5.44"
+            self._selectors["confidence"] = "provisional"  # self-heal 경로
+            self._save_selectors(self._selectors)
+            # 서버 공유
+            try:
+                from core.cloud import upload_selectors, normalize_domain
+                domain = normalize_domain(self.url or self._wid)
+                upload_selectors(domain, self._wid, self._selectors)
+            except Exception:
+                pass
+            self._progress(f"  self-heal 저장: {key} = {value[:60]}")
+        except Exception as e:
+            self._progress(f"  self-heal 저장 실패: {e}")
+
+    # v1.5.43 L3: row HTML 만으로 담기 버튼 상대 CSS AI 질의
+    async def _ai_suggest_row_relative_cart(self, row_html: str) -> str:
+        """row 의 outerHTML 을 AI 에 보내 row 내부 상대 CSS 셀렉터를 받는다."""
+        if not row_html:
+            return ""
+        try:
+            from core.visual_agent import VisualAgent
+            from core.ai_analyzer import _load_api_key
+            agent = VisualAgent(api_key=_load_api_key(), wid=self._wid)
+            if not agent._can_call_ai():
+                return ""
+            screenshot, _ = await agent._capture(self._page)
+            prompt = f"""다음은 약품 도매상 사이트 결과 **한 행(tr)의 HTML** 입니다.
+이 행 안에서 "장바구니 담기" 또는 "구매하기/추가" 에 해당하는 버튼의
+**행 내부 상대 CSS 셀렉터** 를 알려주세요.
+
+조건:
+- tr 자체는 포함하지 말고, tr 안쪽 요소만 기준 (예: "td:last-child > a.btn")
+- Playwright CSS (`:has-text()` 허용, `:contains()` 금지)
+- onclick/javascript 값 사용 금지
+- 없으면 null
+
+행 HTML:
+{row_html[:3000]}
+
+응답 (JSON만):
+{{"relative_css": "td:last-child > a.btn", "reason": "근거 짧게"}}
+또는:
+{{"relative_css": null, "reason": "이유"}}"""
+            response = await agent._ask_ai(prompt, screenshot)
+            if not response:
+                return ""
+            rel = (response.get("relative_css") or "").strip()
+            if not rel:
+                return ""
+            # 보안/일관성 필터
+            if "javascript:" in rel.lower() or "onclick" in rel.lower():
+                return ""
+            if "tr:nth-of-type" in rel or rel.startswith("tr"):
+                return ""  # row 내부 상대 경로여야 함
+            return rel
+        except Exception as e:
+            self._progress(f"  AI row 상대 담기 폴백 오류: {e}")
+            return ""
+
+    # v1.5.43: 절대 CSS 셀렉터에서 실제 DOM 요소의 tr 기준 상대경로 추출
+    async def _compute_relative_css(self, absolute_css: str) -> str:
+        """페이지에서 absolute_css 로 요소 찾아, closest('tr') 기준 상대 경로 반환.
+
+        AI 답변이 절대경로여도 저장용 상대경로를 사후 추출하기 위함.
+        요소 없거나 tr 안에 없으면 빈 문자열.
+        """
+        if not absolute_css or not self._page:
+            return ""
+        try:
+            return await self._page.evaluate(
+                r"""(css) => {
+                    const el = document.querySelector(css);
+                    if (!el) return '';
+                    const tr = el.closest('tr');
+                    if (!tr) return '';
+                    const parts = [];
+                    let cur = el;
+                    while (cur && cur !== tr && cur.nodeType === 1 && parts.length < 5) {
+                        let seg = cur.tagName.toLowerCase();
+                        if (cur.id && document.getElementById(cur.id) === cur) {
+                            seg += '#' + cur.id;
+                        } else if (cur.className && typeof cur.className === 'string') {
+                            const cls = cur.className.trim().split(/\s+/).filter(c => c && !/^\d/.test(c))[0];
+                            if (cls) seg += '.' + cls;
+                        }
+                        const parent = cur.parentElement;
+                        if (parent && parent !== tr.parentElement) {
+                            const sib = Array.from(parent.children).filter(c => c.tagName === cur.tagName);
+                            if (sib.length > 1) {
+                                const idx = sib.indexOf(cur);
+                                if (idx >= 0) seg += `:nth-of-type(${idx + 1})`;
+                            }
+                        }
+                        parts.unshift(seg);
+                        cur = cur.parentElement;
+                    }
+                    return parts.join(' > ');
+                }""",
+                absolute_css,
+            )
+        except Exception:
+            return ""
+
+    # v1.5.42 품절 판정 재설계: 명시적 품절 체크 + AI 시각 확인 + 진단 업로드
+
+    async def _check_explicit_out_of_stock(
+        self, rows: list, stock_col: int | None
+    ) -> bool:
+        """모든 행이 명시적으로 '0' 또는 품절 키워드 포함인지 확인.
+
+        stock_col 없거나 rows 비어있으면 False (확정 불가 → 품절 아님).
+        하나라도 숫자가 양수거나 불명확한 텍스트면 False.
+        """
+        if stock_col is None or not rows:
+            return False
+        import re as _re
+        oos_keywords = ("품절", "재고없", "재고 없", "soldout", "sold out")
+        oos_count = 0
+        checked = 0
+        for row in rows:
+            try:
+                cells = await row.query_selector_all('td')
+                if stock_col >= len(cells):
+                    continue
+                text = (await cells[stock_col].inner_text()).strip().lower()
+                checked += 1
+                digits = _re.sub(r'[^\d]', '', text)
+                is_explicit_zero = digits == "0"
+                is_oos_keyword = any(k in text for k in oos_keywords)
+                if is_explicit_zero or is_oos_keyword:
+                    oos_count += 1
+                elif digits and int(digits) > 0:
+                    # 명백히 재고 있는 행 하나라도 있으면 품절 아님
+                    return False
+            except Exception:
+                continue
+        # 체크한 모든 행이 명시적 oos 인 경우에만 True
+        return checked > 0 and oos_count == checked
+
+    async def _ai_check_out_of_stock(
+        self, insurance_code: str, drug_name: str
+    ) -> bool | None:
+        """AI Vision 에 현재 화면이 '해당 약품 품절 상태' 인지 질의.
+
+        Returns:
+            True  — 품절로 확인
+            False — 품절 아님 (재고 있음)
+            None  — 판단 불가 (AI 비활성/에러). 호출부는 False 처리 권장.
+        """
+        try:
+            from core.visual_agent import VisualAgent
+            from core.ai_analyzer import _load_api_key
+            agent = VisualAgent(api_key=_load_api_key(), wid=self._wid)
+            if not agent._can_call_ai():
+                return None
+            screenshot, _ = await agent._capture(self._page)
+            prompt = f"""스크린샷은 약품 도매상 사이트 검색 결과 페이지입니다.
+
+약품: {drug_name[:60]} (보험코드: {insurance_code})
+
+질문: 이 약품이 **품절/재고 없음** 상태로 표시되어 있습니까?
+
+품절 신호:
+- 재고 수량 "0" 명시
+- "품절", "재고없음", "soldout" 텍스트
+- 담기/구매 버튼이 비활성/회색/숨겨짐
+
+재고 있음 신호:
+- 재고 수량 양수 (예: "3", "10+")
+- "재고" 아이콘/버튼이 정상 클릭 가능
+- 담기 버튼 활성
+
+응답 (JSON만):
+{{"out_of_stock": true, "reason": "간단 근거"}}
+또는:
+{{"out_of_stock": false, "reason": "재고 있어 보임 / 판단 근거"}}"""
+            response = await agent._ask_ai(prompt, screenshot)
+            if not response or "out_of_stock" not in response:
+                return None
+            return bool(response.get("out_of_stock"))
+        except Exception as e:
+            self._progress(f"  AI 품절 확인 오류: {e}")
+            return None
+
+    async def _upload_oos_diagnostic(
+        self, insurance_code: str, rows: list,
+        stock_col: int | None, table: dict, reason: str
+    ) -> None:
+        """품절 판정 시점의 진단 정보를 서버에 업로드.
+
+        reason: 'ai_confirmed' / 'suspected_misdetection' / 'explicit'
+        개발자가 error_logs 에서 level=OOS_DIAG 로 필터 가능.
+        """
+        try:
+            from core.cloud import is_enabled, _api_url, _headers
+            if not is_enabled():
+                return
+            import requests as _req
+            from datetime import datetime as _dt
+            from core.version import VERSION
+
+            # stock 컬럼 raw 텍스트 샘플 (최대 5행)
+            samples = []
+            if stock_col is not None:
+                for i, row in enumerate(rows[:5]):
+                    try:
+                        cells = await row.query_selector_all('td')
+                        if stock_col < len(cells):
+                            t = (await cells[stock_col].inner_text()).strip()
+                            samples.append({"row": i, "stock_text": t[:100]})
+                    except Exception:
+                        continue
+
+            # 헤더 원본 (stock_col 무엇을 잡았는지)
+            header_name = ""
+            try:
+                if rows and stock_col is not None:
+                    tbl_handle = await rows[0].evaluate_handle(
+                        'el => el.closest("table")'
+                    )
+                    ths = await tbl_handle.query_selector_all(
+                        'thead th, tr:first-child th'
+                    )
+                    if stock_col < len(ths):
+                        header_name = (
+                            await ths[stock_col].inner_text()
+                        ).strip()[:40]
+            except Exception:
+                pass
+
+            screenshot_b64 = await self._capture_screenshot_b64()
+
+            pharmacy_code = ""
+            try:
+                from core.auth import get_activation_code
+                pharmacy_code = get_activation_code() or ""
+            except Exception:
+                pass
+
+            payload = {
+                "pharmacy_code": pharmacy_code,
+                "version": VERSION,
+                "level": "OOS_DIAG",
+                "message": (
+                    f"{self._wid} [{insurance_code}] 품절 판정 진단 "
+                    f"(reason={reason})"
+                ),
+                "context": {
+                    "wid": self._wid,
+                    "insurance_code": insurance_code,
+                    "reason": reason,
+                    "stock_col": stock_col,
+                    "stock_col_header": header_name,
+                    "table_selectors": {
+                        k: v for k, v in (table or {}).items()
+                        if "col" in k or k in ("result_rows", "cart_btn")
+                    },
+                },
+                "log_tail": (
+                    '{"stock_text_samples": '
+                    + str(samples)
+                    + (', "screenshot_b64": "' + screenshot_b64 + '"'
+                       if screenshot_b64 else "")
+                    + "}"
+                )[:500000],
+            }
+            _req.post(
+                _api_url("error_logs"),
+                headers=_headers(),
+                json=payload,
+                timeout=10,
+            )
+        except Exception as e:
+            self._progress(f"  OOS 진단 업로드 실패: {e}")
+
+    # v1.5.41 L4: 담김 시각 검증 (DOM diff 폴백)
+    async def _ai_visual_verify_cart(
+        self, before_snapshot: list, after_snapshot: list, drug_name: str
+    ) -> bool:
+        """DOM diff 로 장바구니 담김을 못 잡았을 때 스크린샷 기반 AI 확인.
+
+        return True 이면 담긴 것으로 간주.
+        비용 절감 위해 DOM diff 실패 시에만 호출 (정상 케이스는 호출 X).
+        """
+        try:
+            from core.visual_agent import VisualAgent
+            from core.ai_analyzer import _load_api_key
+            agent = VisualAgent(api_key=_load_api_key(), wid=self._wid)
+            if not agent._can_call_ai():
+                return False
+            screenshot, _ = await agent._capture(self._page)
+
+            # before/after 테이블 행 수 차이 요약
+            rows_summary = []
+            for i in range(min(len(before_snapshot), len(after_snapshot))):
+                b = before_snapshot[i].get("row_count", 0)
+                a = after_snapshot[i].get("row_count", 0)
+                rows_summary.append(f"table[{i}]: {b}→{a}")
+            rows_txt = ", ".join(rows_summary) or "(스냅샷 없음)"
+
+            prompt = f"""스크린샷은 약품 도매상 사이트입니다.
+방금 어떤 버튼을 눌렀고, 지금 화면에 **장바구니(카트/Cart)** 라고 명시된 영역에
+약품이 담긴 상태인지 확인해주세요.
+
+약품명(참고용, 부분일치 허용): {drug_name[:60]}
+DOM 테이블 행 수 변화: {rows_txt}
+
+**반드시 아래 조건 중 하나 이상 만족해야 true:**
+1. "장바구니", "카트", "Cart" 라고 **명시된 섹션/테이블/모달** 에 해당 약품명이 **행으로 추가**되어 보임 (이전엔 비어있었다면)
+2. "장바구니 N건", "담긴 품목 N개" 등 **숫자 카운터가 0→양수 또는 증가**
+3. "담기 완료", "장바구니에 추가되었습니다" 라는 **명시적 성공 토스트/모달**
+
+**다음은 담김 신호 아님 (false 반환):**
+- "제품정보", "상세정보", "상품 미리보기" 등 **제품 상세 패널**에 약품 표시 (이건 선택 표시일 뿐)
+- 검색 결과 테이블의 특정 행 **하이라이트** (이건 선택 표시일 뿐)
+- "자주구매 등록됨", "즐겨찾기 추가" 등 **다른 기능** 의 성공 메시지
+- DOM 행 수 **변화 없음** 에서 제품정보만 업데이트된 경우
+
+응답 (JSON만):
+{{"cart_has_item": true, "confidence": "high"/"medium"/"low", "signal": "위 1/2/3 중 뭐", "reason": "짧은 근거"}}
+또는:
+{{"cart_has_item": false, "reason": "담김 영역 없음 또는 제품정보만 바뀜"}}"""
+
+            response = await agent._ask_ai(prompt, screenshot)
+            if not response:
+                return False
+            if not response.get("cart_has_item"):
+                return False
+            conf = (response.get("confidence") or "").lower()
+            # v1.5.45: low/medium 모두 거부 — 세화 오탐 사고 재발 방지 (high 만 인정)
+            if conf != "high":
+                self._progress(
+                    f"  AI 시각 담김 불충분 (confidence={conf}) → 거부"
+                )
+                return False
+            signal = response.get("signal", "")
+            self._progress(
+                f"  AI 시각 담김 확인 (signal={signal}): "
+                f"{response.get('reason', '')[:60]}"
+            )
+            return True
+        except Exception as e:
+            self._progress(f"  AI 시각 검증 오류: {e}")
+            return False
+
     async def analyze_site(self, test_code: str = "646201260",
                            headless: bool = True) -> dict:
         """사이트 구조를 분석하고 셀렉터를 캐시한다.
@@ -1230,6 +1890,67 @@ DOM 뼈대:
         }
         return parts.join(' > ');
       };
+      // v1.5.43 근본 수정: row 내부 상대 경로 (ancestor = tr 기준).
+      // 모든 행에 일반화되는 셀렉터를 저장하기 위한 핵심 함수.
+      // 절대 경로처럼 `tr:nth-of-type(N)` 이 절대 안 섞이도록 ancestor 에서 멈춤.
+      const _relativeCss = (el, ancestor) => {
+        if (!el || !ancestor) return '';
+        if (el === ancestor) return '';
+        const parts = [];
+        let cur = el;
+        while (cur && cur !== ancestor && cur.nodeType === 1 && parts.length < 5) {
+          let seg = cur.tagName.toLowerCase();
+          // id 는 행 내부에 있어도 unique 가능 — 쓰면 더 짧고 안정적
+          if (cur.id && document.getElementById(cur.id) === cur) {
+            seg += '#' + cur.id;
+          } else if (cur.className && typeof cur.className === 'string') {
+            const cls = cur.className.trim().split(/\s+/).filter(c => c && !/^\d/.test(c))[0];
+            if (cls) seg += '.' + cls;
+          }
+          // nth-of-type 은 row 내부에서 필요한 경우 유지 (td:nth-of-type(3) 같이)
+          const parent = cur.parentElement;
+          if (parent && parent !== ancestor.parentElement) {
+            const siblings = Array.from(parent.children).filter(c => c.tagName === cur.tagName);
+            if (siblings.length > 1) {
+              const idx = siblings.indexOf(cur);
+              if (idx >= 0) seg += `:nth-of-type(${idx + 1})`;
+            }
+          }
+          parts.unshift(seg);
+          cur = cur.parentElement;
+        }
+        return parts.join(' > ');
+      };
+      // v1.5.43: 행 구조 지문 — 사이트 리뉴얼/구조 변경 자동 감지용.
+      // td 개수 + 각 td 의 상호작용 요소 시그니처 + 자식 태그 구조 요약.
+      const _rowFingerprint = (tr) => {
+        if (!tr) return '';
+        const cells = tr.querySelectorAll('td');
+        const parts = [];
+        cells.forEach((td, i) => {
+          const hasInput = !!td.querySelector('input:not([type="hidden"])');
+          const hasImg = !!td.querySelector('img');
+          const hasBtn = !!td.querySelector('a, button, [onclick], [role="button"], [role="link"]');
+          const innerTags = Array.from(td.children)
+            .map(c => c.tagName.toLowerCase())
+            .slice(0, 3)
+            .join(',');
+          parts.push(`${i}:${hasInput?1:0}${hasImg?1:0}${hasBtn?1:0}:${innerTags}`);
+        });
+        return parts.join('|').slice(0, 300);
+      };
+      // v1.5.41: visibility 사전 필터 — display:none / visibility:hidden / 0-size 제외
+      const _isVisible = (el) => {
+        if (!el || !el.getBoundingClientRect) return false;
+        const r = el.getBoundingClientRect();
+        if (r.width < 1 || r.height < 1) return false;
+        try {
+          const s = window.getComputedStyle(el);
+          if (s.display === 'none' || s.visibility === 'hidden') return false;
+          if (parseFloat(s.opacity || '1') < 0.1) return false;
+        } catch (e) {}
+        return true;
+      };
       // 개인정보/비밀 필드 값은 마스킹 (id/pw input, 환자명 등)
       const _sanitize = (html) => {
         if (!html) return '';
@@ -1243,7 +1964,10 @@ DOM 뼈대:
         tables: [], buttons_with_text: [], inputs: [],
         images_likely_buttons: [], cart_indicators: [],
         sample_rows_html: [],            // 각 테이블 첫 3행 outerHTML
-        row_last_cell_clickables: [],    // 각 row 마지막 td의 클릭 가능 요소
+        row_last_cell_clickables: [],    // (히스토리컬 이름) 실제로는 row 전체 td 의 클릭 가능 요소
+        iframes: [],                     // v1.5.41: iframe 감지 (내부 자동 클릭은 미지원)
+        global_cart_candidates: [],      // v1.5.44: row 밖 전역 "장바구니담기" 버튼 (세화 패턴)
+        row_checkboxes: [],              // v1.5.44: row 내부 체크박스 (전역 버튼 패턴과 짝)
       };
       document.querySelectorAll('table').forEach((tbl, ti) => {
         const ths = Array.from(tbl.querySelectorAll('thead th, thead td')).map(h => h.textContent.trim().slice(0, 20));
@@ -1254,9 +1978,28 @@ DOM 뼈대:
           text: td.textContent.trim().slice(0, 40),
           inner_tags: Array.from(td.children).map(_tag).slice(0, 4),
           has_input: !!td.querySelector('input'), has_img: !!td.querySelector('img'),
-          has_button: !!td.querySelector('button, a, [onclick]'),
+          has_button: !!td.querySelector('button, a, [onclick], [role="button"], [role="link"], [tabindex]'),
         })) : [];
-        report.tables.push({ idx: ti, css: _cssPath(tbl), headers: firstTh.slice(0, 20), row_count: bodyRows.length, first_row_cells: rowCells.slice(0, 20) });
+        // v1.5.43 근본 수정: nth-of-type 없는 일반화된 rows 셀렉터 + 첫 데이터행 지문
+        const tblCss = _cssPath(tbl);
+        let rowsCss;
+        if (tbl.id) {
+          rowsCss = `#${CSS.escape(tbl.id)} tbody tr`;
+        } else {
+          // tblCss 는 경로에 nth-of-type 가 있을 수 있지만 "tbody tr" 은 행 전체 매칭
+          rowsCss = tblCss + ' tbody tr';
+        }
+        const firstDataRow = Array.from(bodyRows).find(tr => tr.querySelectorAll('td').length >= 2);
+        const rowFp = _rowFingerprint(firstDataRow);
+        report.tables.push({
+          idx: ti,
+          css: tblCss,
+          rows_css: rowsCss,
+          row_fingerprint: rowFp,
+          headers: firstTh.slice(0, 20),
+          row_count: bodyRows.length,
+          first_row_cells: rowCells.slice(0, 20)
+        });
         // 각 테이블에서 데이터 있는 row 최대 3개의 outerHTML 통째로 수집
         const dataRows = Array.from(bodyRows).filter(tr =>
           tr.querySelectorAll('td').length >= 2
@@ -1266,56 +2009,168 @@ DOM 뼈대:
             table_idx: ti, row_idx: ri,
             html: _sanitize((tr.outerHTML || '').slice(0, 3000)),
           });
-          // 마지막 td 의 모든 clickable 요소 수집 (담기 버튼 후보)
-          const lastTd = tr.querySelector('td:last-child');
-          if (lastTd) {
-            lastTd.querySelectorAll('a, button, img, input, [onclick]').forEach(el => {
-              if (report.row_last_cell_clickables.length >= 30) return;
+          // v1.5.41: row 의 **모든 td** 클릭 가능 요소 수집 (담기 버튼이 첫째/중간 td 인 사이트 대응)
+          //          + role/tabindex 기반 요소 포함, visibility 필터 적용
+          // v1.5.45: 자주구매/즐겨찾기/별표 블랙리스트 (세화 freq.png 오탐 방지)
+          const BLACKLIST_KEYWORDS = ['freq', '즐겨', '자주', 'favorite', 'favor', 'star', 'bookmark', '다빈도', 'multi_freq', '관심제품', '관심', 'interest'];
+          const clickableSelector = 'a, button, img, input, [onclick], [role="button"], [role="link"], [tabindex]:not([tabindex="-1"])';
+          Array.from(tr.querySelectorAll('td')).forEach((td, cellIdx) => {
+            td.querySelectorAll(clickableSelector).forEach(el => {
+              if (report.row_last_cell_clickables.length >= 50) return;
+              if (!_isVisible(el)) return;
+              // input type=text/number 는 담기 버튼 아닐 확률 높음 (수량 입력) — 제외
+              if (el.tagName.toLowerCase() === 'input') {
+                const t = (el.getAttribute('type') || '').toLowerCase();
+                if (t === 'text' || t === 'number' || t === 'password' || t === 'hidden') return;
+              }
+              // v1.5.45: 자주구매/즐겨찾기 요소 블랙리스트
+              const alt_l = (el.getAttribute('alt') || '').toLowerCase();
+              const src_l = (el.getAttribute('src') || '').toLowerCase();
+              const title_l = (el.getAttribute('title') || '').toLowerCase();
+              const class_l = (typeof el.className === 'string' ? el.className : '').toLowerCase();
+              const haystack = alt_l + '|' + src_l + '|' + title_l + '|' + class_l;
+              if (BLACKLIST_KEYWORDS.some(k => haystack.includes(k))) return;
               report.row_last_cell_clickables.push({
-                table_idx: ti, row_idx: ri,
+                table_idx: ti, row_idx: ri, cell_idx: cellIdx,
                 tag: el.tagName.toLowerCase(),
+                role: el.getAttribute('role') || '',
                 css: _cssPath(el),
+                row_relative_css: _relativeCss(el, tr),
                 outer_html: _sanitize((el.outerHTML || '').slice(0, 500)),
                 onclick: (el.getAttribute('onclick') || '').slice(0, 200),
                 href: (el.getAttribute('href') || '').slice(0, 200),
                 alt: (el.getAttribute('alt') || '').slice(0, 40),
                 src: (el.getAttribute('src') || '').slice(0, 100),
                 text: (el.textContent || '').trim().slice(0, 30),
+                aria_label: (el.getAttribute('aria-label') || '').slice(0, 40),
+                title_attr: (el.getAttribute('title') || '').slice(0, 40),
               });
             });
-          }
+          });
         });
       });
+      // v1.5.41: button 류 선택자에 role/tabindex 포함, visibility 필터
       const btnKeywords = ['담기', '장바구니', '추가', '구매', '주문'];
-      document.querySelectorAll('button, a, input[type="button"], input[type="submit"], input[type="image"], span[onclick], div[onclick]').forEach(el => {
+      const btnSelector = 'button, a, input[type="button"], input[type="submit"], input[type="image"], span[onclick], div[onclick], [role="button"], [role="link"], [tabindex]:not([tabindex="-1"])';
+      document.querySelectorAll(btnSelector).forEach(el => {
+        if (!_isVisible(el)) return;
         const txt = (el.textContent || '').trim().slice(0, 30);
         const val = el.value || '', alt = el.getAttribute('alt') || '', src = el.getAttribute('src') || '';
-        if (btnKeywords.find(k => txt.includes(k) || val.includes(k) || alt.includes(k))) {
+        const aria = el.getAttribute('aria-label') || '', title = el.getAttribute('title') || '';
+        const hay = txt + ' ' + val + ' ' + alt + ' ' + aria + ' ' + title;
+        if (btnKeywords.find(k => hay.includes(k))) {
+          const tr = el.closest('tr');
           report.buttons_with_text.push({
             tag: el.tagName.toLowerCase(), type: el.getAttribute('type') || '',
+            role: el.getAttribute('role') || '',
             text: txt, value: val, alt, src: src.slice(0, 80), css: _cssPath(el),
-            in_table_row: !!el.closest('tr'),
-            near_qty_input: !!el.closest('tr')?.querySelector('input[type="text"], input[type="number"]'),
+            row_relative_css: tr ? _relativeCss(el, tr) : '',
+            aria_label: aria.slice(0, 40), title_attr: title.slice(0, 40),
+            in_table_row: !!tr,
+            near_qty_input: !!tr?.querySelector('input[type="text"], input[type="number"]'),
           });
         }
       });
-      report.buttons_with_text = report.buttons_with_text.slice(0, 30);
+      report.buttons_with_text = report.buttons_with_text.slice(0, 40);
       document.querySelectorAll('input[type="text"], input[type="number"]').forEach((inp, i) => {
         if (i >= 10) return;
+        if (!_isVisible(inp)) return;
         const row = inp.closest('tr');
         report.inputs.push({
-          css: _cssPath(inp), name: inp.name || inp.id || '', placeholder: inp.placeholder || '',
+          css: _cssPath(inp),
+          row_relative_css: row ? _relativeCss(inp, row) : '',
+          name: inp.name || inp.id || '', placeholder: inp.placeholder || '',
           in_row: !!row, row_idx: row ? Array.from(row.parentElement.children).indexOf(row) : -1,
         });
       });
-      document.querySelectorAll('input[type="image"], a > img, button > img, td:last-child img').forEach((el, i) => {
-        if (i >= 20) return;
-        const parent = el.closest('a, button, input');
+      // v1.5.41: 이미지 버튼 후보 확대 — td:last-child 제한 제거, row 내 모든 img
+      // v1.5.45: 자주구매/즐겨찾기 블랙리스트 적용
+      const IMG_BLACKLIST = ['freq', '즐겨', '자주', 'favorite', 'favor', 'star', 'bookmark', '다빈도', 'multi_freq', '관심제품', '관심', 'interest'];
+      document.querySelectorAll('input[type="image"], a > img, button > img, tr img').forEach((el, i) => {
+        if (i >= 30) return;
+        if (!_isVisible(el)) return;
+        const alt_l = (el.getAttribute('alt') || '').toLowerCase();
+        const src_l = (el.getAttribute('src') || '').toLowerCase();
+        const title_l = (el.getAttribute('title') || '').toLowerCase();
+        if (IMG_BLACKLIST.some(k => (alt_l + src_l + title_l).includes(k))) return;
+        const parent = el.closest('a, button, input, [role="button"]');
+        const tr = el.closest('tr');
         report.images_likely_buttons.push({
           tag: el.tagName.toLowerCase(), alt: el.getAttribute('alt') || '',
           src: (el.getAttribute('src') || '').slice(0, 100),
           parent_tag: parent ? parent.tagName.toLowerCase() : '',
-          css: _cssPath(el), in_row: !!el.closest('tr'),
+          css: _cssPath(el),
+          row_relative_css: tr ? _relativeCss(el, tr) : '',
+          in_row: !!tr,
+        });
+      });
+      // v1.5.44: 전역 담기 버튼 수집 (row 밖에 있는 "장바구니담기/선택담기" 버튼)
+      //          세화처럼 각 행에 담기 버튼 없고 전역 버튼 1개 + row 체크박스 패턴 대응
+      const GLOBAL_CART_KEYWORDS = ['장바구니담기', '선택담기', '주문담기', '장바구니 담기', '선택 담기'];
+      const GLOBAL_CART_KEYWORDS_LOOSE = ['장바구니', '담기', '선택', '주문'];  // 2차 매칭
+      document.querySelectorAll('button, a, input[type="button"], input[type="submit"], [role="button"]').forEach(el => {
+        if (!_isVisible(el)) return;
+        if (el.closest('tr')) return;  // row 안에 있는 건 row 패턴용
+        const txt = (el.textContent || '').trim();
+        const val = (el.value || '').trim();
+        const aria = (el.getAttribute('aria-label') || '').trim();
+        const hay = (txt + ' ' + val + ' ' + aria).slice(0, 80);
+        let matched = GLOBAL_CART_KEYWORDS.some(k => hay.includes(k));
+        // 2차: 느슨한 매칭 — "담기" 포함 + 버튼 명확한 요소
+        if (!matched && (el.tagName === 'BUTTON' || el.type === 'button' || el.type === 'submit')) {
+          matched = hay.includes('담기') || hay.includes('장바구니');
+        }
+        if (!matched) return;
+        if (report.global_cart_candidates.length >= 10) return;
+        report.global_cart_candidates.push({
+          tag: el.tagName.toLowerCase(),
+          text: txt.slice(0, 40),
+          value: val.slice(0, 40),
+          aria_label: aria.slice(0, 40),
+          css: _cssPath(el),
+          type: el.getAttribute('type') || '',
+        });
+      });
+
+      // v1.5.44: row 내부 체크박스 수집 (전역 버튼 패턴의 row 선택용)
+      document.querySelectorAll('input[type="checkbox"]').forEach((chk, i) => {
+        if (i >= 20) return;
+        if (!_isVisible(chk)) return;
+        const tr = chk.closest('tr');
+        if (!tr) return;
+        // 체크박스가 어느 테이블의 몇번째 row 에 있는지
+        const tbl = tr.closest('table');
+        let tbl_idx = -1;
+        if (tbl) {
+          tbl_idx = Array.from(document.querySelectorAll('table')).indexOf(tbl);
+        }
+        report.row_checkboxes.push({
+          css: _cssPath(chk),
+          row_relative_css: _relativeCss(chk, tr),
+          table_idx: tbl_idx,
+          checked: chk.checked,
+          name: chk.name || chk.id || '',
+        });
+      });
+
+      // v1.5.41: iframe 감지 (내부 자동 클릭은 v1.5.42 예정)
+      document.querySelectorAll('iframe').forEach((ifr, i) => {
+        if (i >= 10) return;
+        let same_origin = false, inner_tables = 0, inner_buttons = 0;
+        try {
+          const d = ifr.contentDocument;
+          if (d) {
+            same_origin = true;
+            inner_tables = d.querySelectorAll('table').length;
+            inner_buttons = d.querySelectorAll('button, a[onclick], input[type=image]').length;
+          }
+        } catch (e) { /* cross-origin */ }
+        report.iframes.push({
+          css: _cssPath(ifr),
+          src: (ifr.getAttribute('src') || '').slice(0, 150),
+          name: ifr.name || ifr.id || '',
+          same_origin, inner_tables, inner_buttons,
+          visible: _isVisible(ifr),
         });
       });
       // 장바구니 카운트 후보 — 키워드 + "N건/N개" 패턴 + 장바구니 테이블 tbody tr 개수
@@ -1478,6 +2333,73 @@ DOM 뼈대:
                 return report
             _mark("login", True)
 
+            # v1.5.46: 수동 셀렉터 우선 검증 (validation-only 모드)
+            # 서버에서 받은 수동 주입 셀렉터가 있으면 AI 자동 탐지 건너뛰고
+            # 결과 행 셀렉터가 실제로 매칭되는지만 확인해서 통과시킴.
+            # 실패 시 아래 AI 자동 탐지로 폴백.
+            table_cfg = self._selectors.get("table", {}) or {}
+            schema_ver = table_cfg.get("schema_version", "")
+            layout_mode_hint = table_cfg.get("layout_mode", "")
+            manual_present = bool(
+                schema_ver in ("v1.5.45", "v1.5.46")
+                and layout_mode_hint
+                and table_cfg.get("result_rows")
+            )
+            if manual_present:
+                self._progress(
+                    f"연동: 수동 셀렉터 감지 (schema={schema_ver}, "
+                    f"layout={layout_mode_hint}) → 검증 모드"
+                )
+                try:
+                    search_cfg = self._selectors.get("search", {}) or {}
+                    s_input = search_cfg.get("search_input")
+                    s_btn = search_cfg.get("search_btn")
+                    result_rows_sel = table_cfg.get("result_rows")
+                    if s_input:
+                        await self._page.fill(s_input, "")
+                        await self._page.wait_for_timeout(200)
+                        await self._page.fill(s_input, probe_term)
+                        await self._page.wait_for_timeout(200)
+                        if s_btn:
+                            try:
+                                await self._page.click(s_btn)
+                            except Exception:
+                                await self._page.press(s_input, "Enter")
+                        else:
+                            await self._page.press(s_input, "Enter")
+                        await self._page.wait_for_timeout(3000)
+                        # 수동 result_rows 셀렉터로 행 개수 확인
+                        row_count = await self._page.locator(
+                            result_rows_sel
+                        ).count()
+                        if row_count > 0:
+                            report["success"] = True
+                            report["stage"] = "done"
+                            report["message"] = (
+                                f"수동 셀렉터 검증 성공 "
+                                f"({probe_term} → {row_count}행)"
+                            )
+                            report["confirmed_selectors"] = self._selectors
+                            _mark(
+                                "manual_validation", True,
+                                f"rows={row_count} layout={layout_mode_hint}"
+                            )
+                            return report
+                        _mark(
+                            "manual_validation", False,
+                            f"result_rows 매칭 0 — AI 자동 탐지로 폴백"
+                        )
+                    else:
+                        _mark(
+                            "manual_validation", False,
+                            "search_input 없음 — AI 자동 탐지로 폴백"
+                        )
+                except Exception as e:
+                    _mark(
+                        "manual_validation", False,
+                        f"validation 예외: {str(e)[:120]} — AI 자동 탐지로 폴백"
+                    )
+
             # 2. 검색 실행 검증 (search_input 은 기존 셀렉터 사용)
             search = self._selectors.get("search", {})
             search_input = search.get("search_input")
@@ -1543,17 +2465,29 @@ DOM 뼈대:
             dom_report = await self._page.evaluate(self._STRUCTURE_ANALYZER_JS)
             report["onboard_log"]["dom_samples"].append(dom_report)
 
+            # v1.5.43 근본 수정: row_relative_css 가 있는 후보만 수집.
+            # row 내부 상대경로 없는 후보는 다른 행에 일반화 불가능 → 제외.
             candidates = []
             for c in dom_report.get("row_last_cell_clickables", []):
                 if c.get("table_idx") != result_table_idx:
                     continue
+                rel = c.get("row_relative_css", "") or ""
+                if not rel:
+                    continue
                 candidates.append({
-                    "css": c["css"], "in_row": True,
+                    "css": c["css"],
+                    "row_relative_css": rel,
+                    "in_row": True,
                     "source": f"row_cell[{c.get('tag')}]",
                 })
             for b in dom_report.get("buttons_with_text", []):
+                rel = b.get("row_relative_css", "") or ""
+                if not b.get("in_table_row") or not rel:
+                    continue
                 candidates.append({
-                    "css": b["css"], "in_row": b.get("in_table_row", False),
+                    "css": b["css"],
+                    "row_relative_css": rel,
+                    "in_row": True,
                     "source": f"btn[{(b.get('text') or b.get('alt') or '')[:20]}]",
                 })
             for img in dom_report.get("images_likely_buttons", []):
@@ -1561,27 +2495,73 @@ DOM 뼈대:
                 src_lower = (img.get("src") or "").lower()
                 if any(k in (alt_lower + " " + src_lower)
                        for k in ["bag", "cart", "담기", "save", "add", "추가"]):
+                    rel = img.get("row_relative_css", "") or ""
+                    if not img.get("in_row") or not rel:
+                        continue
                     candidates.append({
-                        "css": img["css"], "in_row": img.get("in_row", False),
+                        "css": img["css"],
+                        "row_relative_css": rel,
+                        "in_row": True,
                         "source": f"img[{(img.get('alt') or img.get('src') or '')[:30]}]",
                     })
 
-            # 중복 css 제거
+            # 중복 제거 (row_relative_css 기준 — 진짜 중복 제거)
             seen = set()
             unique = []
             for c in candidates:
-                if c["css"] in seen:
+                key = c["row_relative_css"]
+                if key in seen:
                     continue
-                seen.add(c["css"])
+                seen.add(key)
                 unique.append(c)
             candidates = unique
 
+            # v1.5.41 L2-b: hover 재스캔 — 1차 후보 < 3 개면 각 결과 row 에 hover 후 재수집
+            #                hover 시에만 나타나는 액션바(오버레이 담기 버튼) 대응
+            if len(candidates) < 3 and result_table_idx >= 0:
+                try:
+                    tbl_css = dom_report["tables"][result_table_idx].get("css", "")
+                    if tbl_css:
+                        row_sel = f"{tbl_css} tbody tr"
+                        rows_loc = self._page.locator(row_sel)
+                        nrows = min(await rows_loc.count(), 3)
+                        hover_found = []
+                        for ri in range(nrows):
+                            try:
+                                await rows_loc.nth(ri).hover(timeout=1500)
+                                await self._page.wait_for_timeout(250)
+                                dom2 = await self._page.evaluate(self._STRUCTURE_ANALYZER_JS)
+                                for c in dom2.get("row_last_cell_clickables", []):
+                                    if c.get("table_idx") != result_table_idx:
+                                        continue
+                                    rel = c.get("row_relative_css", "") or ""
+                                    if not rel or rel in seen:
+                                        continue
+                                    seen.add(rel)
+                                    hover_found.append({
+                                        "css": c["css"],
+                                        "row_relative_css": rel,
+                                        "in_row": True,
+                                        "source": f"hover_row[{c.get('tag')}]",
+                                        "needs_hover": True,
+                                        "hover_target": f"{row_sel} >> nth={ri}",
+                                    })
+                            except Exception:
+                                continue
+                        if hover_found:
+                            candidates.extend(hover_found)
+                            _mark(
+                                "hover_rescan", True,
+                                f"+{len(hover_found)} hover candidates",
+                            )
+                except Exception as e:
+                    _mark("hover_rescan", False, str(e)[:120])
+
             if not candidates:
-                report["stage"] = "cart_button"
-                report["message"] = "담기 버튼 후보 없음 — 개발자 분석 필요"
-                _mark("cart_probe", False, "no candidates")
-                return report
-            _mark("cart_probe", True, f"{len(candidates)} candidates")
+                # v1.5.44: row 내부 후보 0개여도 패턴 B (전역 담기 버튼) 로 넘어감
+                _mark("cart_probe", False, "no row-internal — will try pattern B (global)")
+            else:
+                _mark("cart_probe", True, f"{len(candidates)} candidates")
 
             # 4. 수량 input 후보 선정 + 약품명 수집
             qty_input_sel = None
@@ -1601,17 +2581,17 @@ DOM 뼈대:
             except Exception:
                 pass
 
-            # 5. 후보 시험 담기 → DOM diff 검증
+            # 5. 후보 시험 담기 → DOM diff 검증 (+ L4 시각 담김 검증 폴백)
             self._progress(f"연동 [4/5]: {len(candidates)}개 후보 시험 담기...")
-            confirmed_cart_btn = None
-            confirmed_cart_in_row = False
             confirmed_cart_table_idx = -1
 
-            for idx, cand in enumerate(candidates, 1):
-                self._progress(f"  시험 담기 {idx}/{len(candidates)}: {cand['source']}")
+            async def _probe_candidate(cand):
+                """단일 후보 시험 담기 + DOM diff 검증.
+                성공 시 verify dict 반환, 실패 시 None.
+                """
                 tried_log = {**cand, "result": ""}
                 try:
-                    before = await self._snapshot_tables()
+                    before_local = await self._snapshot_tables()
                     if qty_input_sel:
                         try:
                             qty_el = self._page.locator(qty_input_sel).first
@@ -1620,18 +2600,27 @@ DOM 뼈대:
                                 await self._page.wait_for_timeout(200)
                         except Exception:
                             pass
+                    # v1.5.41 L2-b: hover 전용 요소면 먼저 row 에 hover 걸어 노출 유지
+                    if cand.get("needs_hover") and cand.get("hover_target"):
+                        try:
+                            await self._page.locator(
+                                cand["hover_target"]
+                            ).first.hover(timeout=1500)
+                            await self._page.wait_for_timeout(200)
+                        except Exception:
+                            pass
                     try:
                         btn = self._page.locator(cand["css"]).first
                         if await btn.count() == 0:
                             tried_log["result"] = "not_found"
                             report["onboard_log"]["candidates_tried"].append(tried_log)
-                            continue
+                            return None
                         await btn.click(timeout=3000, force=True)
                     except Exception as e:
                         tried_log["result"] = "click_error"
                         tried_log["error"] = str(e)[:120]
                         report["onboard_log"]["candidates_tried"].append(tried_log)
-                        continue
+                        return None
 
                     await self._page.wait_for_timeout(1500)
                     try:
@@ -1645,49 +2634,159 @@ DOM 뼈대:
                     except Exception:
                         pass
 
-                    after = await self._snapshot_tables()
+                    after_local = await self._snapshot_tables()
                     verify = await self._verify_cart_added(
                         drug_name=drug_text, insurance_code="",
-                        before=before, after=after,
+                        before=before_local, after=after_local,
                     )
                     if verify.get("verified"):
-                        confirmed_cart_btn = cand["css"]
-                        confirmed_cart_in_row = cand["in_row"]
-                        confirmed_cart_table_idx = verify.get("cart_table_idx", -1)
                         tried_log["result"] = "VERIFIED"
-                        tried_log["cart_table_idx"] = confirmed_cart_table_idx
+                        tried_log["cart_table_idx"] = verify.get("cart_table_idx", -1)
                         report["onboard_log"]["candidates_tried"].append(tried_log)
-                        break
+                        return verify
+
+                    # v1.5.41 L4: DOM diff 못 잡으면 AI 시각 담김 확인 폴백
+                    visual_verified = await self._ai_visual_verify_cart(
+                        before_local, after_local, drug_text
+                    )
+                    if visual_verified:
+                        tried_log["result"] = "VERIFIED_VISUAL"
+                        tried_log["reason"] = "AI visual confirm"
+                        # cart_table_idx 가 -1 이면 저장 단계에서 cart_rows_sel 이 비게 됨 (감수)
+                        report["onboard_log"]["candidates_tried"].append(tried_log)
+                        return {"verified": True, "cart_table_idx": -1,
+                                "visual": True}
+
                     tried_log["result"] = "not_verified"
                     tried_log["reason"] = verify.get("reason", "")
                     report["onboard_log"]["candidates_tried"].append(tried_log)
+                    return None
                 except Exception as e:
                     tried_log["result"] = "error"
                     tried_log["error"] = str(e)[:120]
                     report["onboard_log"]["candidates_tried"].append(tried_log)
+                    return None
 
-            if not confirmed_cart_btn:
+            # v1.5.43/44: 저장용 row 기준 상대 셀렉터 + click 용 절대 셀렉터 분리
+            confirmed_cart_rel = ""       # 패턴 A: row 내부 상대 CSS
+            confirmed_cart_abs = ""       # 패턴 A: 절대 CSS (세션 내 사용)
+            confirmed_global_cart = ""    # 패턴 B: 전역 담기 버튼 CSS
+            confirmed_checkbox_rel = ""   # 패턴 B: row 체크박스 상대 CSS
+            confirmed_layout_mode = ""    # "row_cart_btn" or "global_cart_btn"
+
+            # 패턴 A: row 내부 담기 버튼 후보 시험
+            for idx, cand in enumerate(candidates, 1):
+                self._progress(f"  패턴 A 시험 {idx}/{len(candidates)}: {cand['source']}")
+                v = await _probe_candidate(cand)
+                if v:
+                    confirmed_cart_abs = cand["css"]
+                    confirmed_cart_rel = cand.get("row_relative_css", "")
+                    confirmed_cart_table_idx = v.get("cart_table_idx", -1)
+                    break
+
+            # 패턴 A - L3 AI 폴백
+            if not confirmed_cart_abs and candidates:
+                self._progress("  패턴 A 전원 실패 → AI Vision 에 문의...")
+                ai_cands = await self._ai_suggest_cart_button(
+                    result_table_idx, dom_report
+                )
+                for idx, cand in enumerate(ai_cands[:2], 1):
+                    self._progress(f"  AI 제안 시험 {idx}/{len(ai_cands[:2])}: {cand['source']}")
+                    v = await _probe_candidate(cand)
+                    if v:
+                        confirmed_cart_abs = cand["css"]
+                        rel_from_ai = cand.get("row_relative_css", "")
+                        if not rel_from_ai:
+                            try:
+                                rel_from_ai = await self._compute_relative_css(
+                                    cand["css"]
+                                )
+                            except Exception:
+                                rel_from_ai = ""
+                        confirmed_cart_rel = rel_from_ai
+                        confirmed_cart_table_idx = v.get("cart_table_idx", -1)
+                        _mark("ai_cart_fallback", True,
+                              f"AI rescued rel={confirmed_cart_rel[:60]}")
+                        break
+
+            # v1.5.44 패턴 B: 전역 담기 버튼 + row 체크박스 (세화 패턴)
+            # 패턴 A 가 실패했거나, row_relative_css 를 확보 못 한 경우 진입
+            if not confirmed_cart_abs or not confirmed_cart_rel:
+                if not confirmed_cart_abs:
+                    self._progress("  패턴 A 전원 실패 → 패턴 B (전역 담기 버튼) 시도...")
+                else:
+                    self._progress("  패턴 A 담기는 됐지만 row 상대경로 확보 실패 → 패턴 B 시도...")
+                # v1.5.45 fix: result_rows_sel 를 패턴 B 호출 전에 미리 계산
+                # (이전 버전 UnboundLocalError — 저장 블록에서만 정의돼서 패턴 B 에 못 넘김)
+                _pb_result_tbl = dom_report["tables"][result_table_idx]
+                _pb_result_rows_sel = _pb_result_tbl.get("rows_css") or (
+                    f"{_pb_result_tbl.get('css', '')} tbody tr"
+                )
+                pb = await self._probe_global_cart_pattern(
+                    dom_report, result_table_idx, _pb_result_rows_sel,
+                    qty_input_sel, drug_text, _probe_log_cb=lambda entry:
+                    report["onboard_log"]["candidates_tried"].append(entry),
+                )
+                if pb:
+                    confirmed_global_cart = pb["global_css"]
+                    confirmed_checkbox_rel = pb.get("checkbox_rel", "")
+                    confirmed_cart_table_idx = pb.get("cart_table_idx", -1)
+                    confirmed_layout_mode = "global_cart_btn"
+                    _mark("pattern_b", True,
+                          f"global={confirmed_global_cart[:60]} chk={confirmed_checkbox_rel[:40]}")
+                else:
+                    _mark("pattern_b", False, "global pattern also failed")
+
+            # 최종 결정
+            if confirmed_layout_mode == "global_cart_btn":
+                pass  # 패턴 B 성공
+            elif confirmed_cart_abs and confirmed_cart_rel:
+                # 패턴 A 성공 + row 상대경로 확보
+                confirmed_layout_mode = "row_cart_btn"
+                # nth-of-type 불변식 체크
+                import re as _re43
+                if _re43.search(r'\btr:nth-of-type\(', confirmed_cart_rel):
+                    report["stage"] = "verify"
+                    report["message"] = (
+                        f"내부 일관성 오류 — cart_btn_in_row 가 tr 포함: "
+                        f"{confirmed_cart_rel[:60]}"
+                    )
+                    _mark("verify", False, "invariant: tr in row_relative_css")
+                    return report
+            else:
                 report["stage"] = "verify"
                 report["message"] = (
-                    f"{len(candidates)}개 후보 시도했으나 담김 검증 실패"
+                    f"패턴 A ({len(candidates)}개 후보+AI) + 패턴 B (전역 버튼) 모두 실패"
                 )
-                _mark("verify", False, "no candidate verified")
+                _mark("verify", False, "both patterns failed")
                 return report
-            _mark("verify", True, f"cart_btn={confirmed_cart_btn[:60]}")
 
-            # 6. selector 확정
+            _mark("verify", True, f"layout={confirmed_layout_mode}")
+
+            # 6. selector 확정 (v1.5.43 근본 포맷)
             self._progress("연동 [5/5]: 셀렉터 저장 + 흔적 정리...")
-            result_tbl_css = dom_report["tables"][result_table_idx].get("css", "")
-            result_rows_sel = (
-                f"{result_tbl_css} tbody tr" if result_tbl_css else ""
+            result_tbl = dom_report["tables"][result_table_idx]
+            # rows_css 는 JS 에서 이미 일반화된 형태 (id 있으면 #id tbody tr)
+            result_rows_sel = result_tbl.get("rows_css") or (
+                f"{result_tbl.get('css', '')} tbody tr"
             )
+            row_fingerprint = result_tbl.get("row_fingerprint", "")
             cart_rows_sel = ""
             if 0 <= confirmed_cart_table_idx < len(dom_report["tables"]):
-                cart_tbl_css = dom_report["tables"][confirmed_cart_table_idx].get("css", "")
-                if cart_tbl_css:
-                    cart_rows_sel = f"{cart_tbl_css} tbody tr"
-            headers = dom_report["tables"][result_table_idx].get("headers", [])
+                cart_tbl = dom_report["tables"][confirmed_cart_table_idx]
+                cart_rows_sel = cart_tbl.get("rows_css") or (
+                    f"{cart_tbl.get('css', '')} tbody tr"
+                )
+            headers = result_tbl.get("headers", [])
             col_idx = _guess_column_indices(headers)
+
+            # 수량 input 의 row 기준 상대 경로 — inputs 중 해당 테이블 행 내부 것
+            qty_input_rel = ""
+            for inp in dom_report.get("inputs", []):
+                rel = inp.get("row_relative_css", "") or ""
+                if inp.get("in_row") and rel:
+                    qty_input_rel = rel
+                    break
 
             confirmed = {
                 "login": self._selectors.get("login", {}),
@@ -1696,12 +2795,28 @@ DOM 뼈대:
                     "search_btn": search_btn or "",
                 },
                 "table": {
+                    # v1.5.44 근본 포맷 (layout_mode 로 A/B 패턴 구분)
                     "result_rows": result_rows_sel,
-                    "qty_input": qty_input_sel or "",
-                    "qty_input_in_row": True,
-                    "cart_btn": confirmed_cart_btn,
-                    "cart_btn_in_row": confirmed_cart_in_row,
+                    "layout_mode": confirmed_layout_mode,
+                    # 패턴 A (row 내부 담기 버튼)
+                    "cart_btn_in_row": (
+                        confirmed_cart_rel
+                        if confirmed_layout_mode == "row_cart_btn" else ""
+                    ),
+                    # 패턴 B (전역 담기 버튼 + row 체크박스)
+                    "global_cart_btn": (
+                        confirmed_global_cart
+                        if confirmed_layout_mode == "global_cart_btn" else ""
+                    ),
+                    "row_checkbox_in_row": (
+                        confirmed_checkbox_rel
+                        if confirmed_layout_mode == "global_cart_btn" else ""
+                    ),
+                    # 공통
+                    "qty_input_in_row": qty_input_rel,
+                    "row_fingerprint": row_fingerprint,
                     "cart_rows_sel": cart_rows_sel,
+                    "schema_version": "v1.5.44",
                     **col_idx,
                 },
                 "confirm": {},
@@ -1730,19 +2845,153 @@ DOM 뼈대:
             except Exception:
                 pass
 
-            # 7. 테스트 흔적 정리
+            # v1.5.42 근본 해결: end-to-end 검증
+            # 담기 버튼 클릭까지만 검증하는 건 실주문 경로(_add_item_to_cart) 의
+            # 품절 판정/규격 파싱/수량 담기 로직을 보장 못 함.
+            # probe 약품의 실제 보험코드를 뽑아 _add_item_to_cart 를 한 번 돌려
+            # 결과가 정상 success 로 나와야 온보딩 성공으로 확정.
+            #
+            # 실패해도 서버 셀렉터는 유지됨 (수정된 selector 가 공유될 가치). 다만
+            # 클라이언트의 onboard_status 는 failed → 이 약국은 주문 분배에서 제외.
+
+            # 7-a. 장바구니 정리 (probe 시험 담기 잔여)
             try:
                 await self._clear_cart()
             except Exception:
                 pass
 
+            # v1.5.43: 첫 3행 각각의 insurance_code 로 실주문 경로 검증
+            # "첫 행만 박제" 사고 원천 차단 — 모든 행에 일반화 적용됨을 증명
+            async def _re_search_and_get_codes():
+                await self._page.fill(search_input, "")
+                await self._page.wait_for_timeout(200)
+                await self._page.fill(search_input, probe_term)
+                if search_btn:
+                    try:
+                        await self._page.click(search_btn)
+                    except Exception:
+                        await self._page.press(search_input, "Enter")
+                else:
+                    await self._page.press(search_input, "Enter")
+                await self._page.wait_for_timeout(2500)
+
+                out = []
+                code_idx = col_idx.get("code_col_idx")
+                name_idx = col_idx.get("name_col_idx")
+                if code_idx is None or not result_rows_sel:
+                    return out
+                rows_loc = self._page.locator(result_rows_sel)
+                nrows = min(await rows_loc.count(), 3)
+                import re as _re
+                for ri in range(nrows):
+                    try:
+                        cells = rows_loc.nth(ri).locator("td")
+                        ccount = await cells.count()
+                        if ccount <= code_idx:
+                            continue
+                        code_txt = (await cells.nth(code_idx).inner_text()).strip()
+                        digits = _re.sub(r'[^\d]', '', code_txt)
+                        if len(digits) < 6:
+                            continue
+                        drug_txt = ""
+                        if name_idx is not None and ccount > name_idx:
+                            drug_txt = (
+                                await cells.nth(name_idx).inner_text()
+                            ).strip()
+                        out.append((digits, drug_txt))
+                    except Exception:
+                        continue
+                return out
+
+            probe_codes = []
+            try:
+                probe_codes = await _re_search_and_get_codes()
+            except Exception as e:
+                _mark("e2e_probe_extract", False, str(e)[:120])
+
+            if not probe_codes:
+                _mark(
+                    "e2e_skip", True,
+                    f"probe_code 추출 실패 (code_col_idx={col_idx.get('code_col_idx')})"
+                )
+            else:
+                self._progress(
+                    f"연동 [6/6]: end-to-end 3행 검증 — {len(probe_codes)}개 약품"
+                )
+                e2e_failures = []
+                for pi, (pcode, pdrug) in enumerate(probe_codes, 1):
+                    self._progress(
+                        f"  e2e {pi}/{len(probe_codes)}: "
+                        f"{pdrug[:20]}({pcode})"
+                    )
+                    # 각 시도 전 장바구니 정리 + 검색 결과 복구
+                    try:
+                        await self._clear_cart()
+                    except Exception:
+                        pass
+                    try:
+                        e2e_res = await self._add_item_to_cart(
+                            insurance_code=pcode,
+                            quantity=1, idx=pi, total=len(probe_codes),
+                            preferred_unit=None,
+                        )
+                    except Exception as _e:
+                        e2e_failures.append(
+                            f"{pcode} 예외: {str(_e)[:80]}"
+                        )
+                        continue
+
+                    if e2e_res.get("out_of_stock"):
+                        e2e_failures.append(
+                            f"{pcode} 품절 오감지: "
+                            f"{e2e_res.get('message','')[:60]}"
+                        )
+                    elif not e2e_res.get("success"):
+                        e2e_failures.append(
+                            f"{pcode} 실패: "
+                            f"{e2e_res.get('message','?')[:60]}"
+                        )
+
+                if e2e_failures:
+                    _mark(
+                        "e2e", False,
+                        f"{len(e2e_failures)}/{len(probe_codes)} 실패: "
+                        f"{e2e_failures[0]}"
+                    )
+                    report["stage"] = "e2e"
+                    report["message"] = (
+                        f"3행 end-to-end 검증 실패 "
+                        f"({len(e2e_failures)}/{len(probe_codes)}): "
+                        f"{e2e_failures[0]}"
+                    )
+                    # onboard_log 에 상세 첨부
+                    report["onboard_log"]["e2e_failures"] = e2e_failures
+                    return report
+
+                _mark(
+                    "e2e", True,
+                    f"3행 전부 성공 ({len(probe_codes)} / {len(probe_codes)})"
+                )
+                try:
+                    await self._clear_cart()
+                except Exception:
+                    pass
+
             report["success"] = True
             report["stage"] = "done"
-            report["message"] = "도매상 연동 완료 — 자동 주문 가능"
+            report["message"] = "도매상 연동 완료 — 자동 주문 가능 (end-to-end 검증됨)"
             report["confirmed_selectors"] = confirmed
             _mark("done", True)
             return report
         finally:
+            # v1.5.41: 실패 시 마지막 화면 JPEG 스크린샷 (base64) 을 로그에 첨부
+            if not report.get("success"):
+                try:
+                    b64 = await self._capture_screenshot_b64()
+                    if b64:
+                        report["onboard_log"]["fail_screenshot_b64"] = b64
+                except Exception:
+                    pass
             try:
                 await self._close()
             except Exception:
@@ -1755,6 +3004,7 @@ DOM 뼈대:
 
         - cart_count_sel: 단일 텍스트 요소에서 숫자 추출 (예: "장바구니 3건" 배지)
         - cart_rows_sel : locator 매칭 요소 수 반환 (예: 장바구니 테이블 tbody tr)
+        - cart_iframe (v1.5.46): 위 셀렉터를 iframe 안에서 찾음 (아남)
         둘 다 없으면 부모 범용 로직 fallback.
         """
         if not self._page:
@@ -1763,9 +3013,28 @@ DOM 뼈대:
             table = self._selectors.get("table", {}) if hasattr(self, "_selectors") else {}
             custom_sel = table.get("cart_count_sel")
             rows_sel = table.get("cart_rows_sel")
+            cart_iframe = table.get("cart_iframe", "")
         except Exception:
             custom_sel = None
             rows_sel = None
+            cart_iframe = ""
+
+        # v1.5.46: iframe 안에서 찾기 (아남 장바구니)
+        if cart_iframe:
+            try:
+                scope = self._page.frame_locator(cart_iframe)
+                if custom_sel:
+                    el = scope.locator(custom_sel).first
+                    if await el.count() > 0:
+                        text = (await el.inner_text()).strip()
+                        import re
+                        nums = re.sub(r'[^\d]', '', text)
+                        if nums:
+                            return int(nums)
+                if rows_sel:
+                    return await scope.locator(rows_sel).count()
+            except Exception:
+                pass
 
         if custom_sel:
             try:
@@ -2091,34 +3360,21 @@ DOM 뼈대:
             await self._close()
 
     async def _row_has_order_button(
-        self, row, cart_btn_sel: str | None,
-        cart_in_row: bool, chk_sel: str | None,
+        self, row, cart_btn_in_row_sel: str = "",
     ) -> bool:
-        """행에 주문 가능한 인터랙션(담기 버튼 or 체크박스)이 있는지 확인.
+        """행에 주문 가능한 담기 버튼이 있는지 확인 (v1.5.43 재작성).
 
-        검색 결과 행은 담기 버튼/체크박스가 있고, 장바구니/헤더/광고 행은 없다.
-        세화처럼 같은 페이지에 장바구니 테이블이 공존하는 사이트에서 잘못된 행
-        선택을 방지한다. 관련 셀렉터가 전혀 없으면 하위 호환 위해 True 반환.
+        검색 결과 행은 담기 버튼이 있고, 장바구니/헤더/광고 행은 없다.
+        cart_btn_in_row_sel 은 row 내부 상대 CSS 셀렉터.
+        비어있으면 하위 호환 위해 True 반환 (필터 무력화).
         """
-        has_sel = (cart_in_row and cart_btn_sel) or chk_sel
-        if not has_sel:
+        if not cart_btn_in_row_sel:
             return True
-
-        if cart_in_row and cart_btn_sel:
-            try:
-                if await row.query_selector(cart_btn_sel):
-                    return True
-            except Exception:
-                pass
-
-        if chk_sel:
-            try:
-                if await row.query_selector(chk_sel):
-                    return True
-            except Exception:
-                pass
-
-        return False
+        try:
+            el = await row.query_selector(cart_btn_in_row_sel)
+            return el is not None
+        except Exception:
+            return False
 
     async def _add_item_to_cart(self, insurance_code: str, quantity: int,
                                 idx: int, total: int,
@@ -2126,7 +3382,10 @@ DOM 뼈대:
         page = self._page
         result = {"success": False, "insurance_code": insurance_code,
                   "quantity": quantity, "box_qty": 0, "pack_size": 0,
-                  "drug_name": "", "message": "", "unit_options": []}
+                  "drug_name": "", "message": "", "unit_options": [],
+                  # v1.5.43 신규 플래그
+                  "retryable": False,
+                  "invalidate_selectors": False}
 
         # 검색 전 현재 URL 저장 (페이지 복구용)
         _order_url = page.url
@@ -2135,6 +3394,66 @@ DOM 뼈대:
         table = self._selectors.get("table", {})
         search_input = search.get("search_input")
         search_btn = search.get("search_btn")
+
+        # v1.5.44+: layout_mode 로 패턴 분기 + 구 포맷 감지
+        # v1.5.46: select_then_add (지오영), global_cart_btn 체크박스 없는 변종 (아남) 추가
+        cart_rel_stored = table.get("cart_btn_in_row")
+        qty_rel_stored = table.get("qty_input_in_row")
+        global_cart_stored = table.get("global_cart_btn")
+        row_checkbox_stored = table.get("row_checkbox_in_row")
+        # select_then_add (v1.5.46): 결과 행 밖 고정 위치 담기/수량
+        select_cart_btn_stored = table.get("cart_btn")  # 절대경로
+        select_qty_input_stored = table.get("qty_input")  # 절대경로
+        # iframe 지원 (v1.5.46): 아남 장바구니
+        cart_iframe_stored = table.get("cart_iframe", "")
+        layout_mode = table.get("layout_mode", "")
+        if not isinstance(cart_rel_stored, str):
+            cart_rel_stored = ""
+        if not isinstance(qty_rel_stored, str):
+            qty_rel_stored = ""
+        if not isinstance(global_cart_stored, str):
+            global_cart_stored = ""
+        if not isinstance(row_checkbox_stored, str):
+            row_checkbox_stored = ""
+        if not isinstance(select_cart_btn_stored, str):
+            select_cart_btn_stored = ""
+        if not isinstance(select_qty_input_stored, str):
+            select_qty_input_stored = ""
+        if not isinstance(cart_iframe_stored, str):
+            cart_iframe_stored = ""
+        schema_ver = table.get("schema_version", "")
+        # layout_mode 유추 (schema v1.5.43 이전 저장된 건 row_cart_btn)
+        if not layout_mode:
+            if select_cart_btn_stored and select_qty_input_stored:
+                layout_mode = "select_then_add"
+            elif cart_rel_stored and not global_cart_stored:
+                layout_mode = "row_cart_btn"
+            elif global_cart_stored:
+                layout_mode = "global_cart_btn"
+
+        supported_schemas = ("v1.5.43", "v1.5.44", "v1.5.45", "v1.5.46")
+        # 구 포맷 감지: schema 가 지원 목록에 없고 + 레거시 지표
+        #   (a) cart_btn 절대경로 + layout_mode 없음 (진짜 구 포맷)
+        #   (b) 신 필드 전혀 없음 (cart_btn_in_row / global_cart_btn / select_then_add 필드 모두 없음)
+        has_any_modern = bool(
+            cart_rel_stored or global_cart_stored or
+            (select_cart_btn_stored and layout_mode == "select_then_add")
+        )
+        if schema_ver not in supported_schemas and (
+            (table.get("cart_btn") and not layout_mode) or
+            not has_any_modern
+        ):
+            # 구 포맷 — 절대경로 또는 신 필드 전혀 없음
+            self._progress(
+                f"  [{insurance_code}] 구 포맷 셀렉터 감지 → "
+                f"재연동 유도 (이 주문은 다른 도매상으로 재분배)"
+            )
+            result["retryable"] = True
+            result["invalidate_selectors"] = True
+            result["message"] = (
+                "저장된 셀렉터가 구 포맷 (v1.5.44 이전) — 재연동 필요"
+            )
+            return result
 
         if not search_input:
             # AI Fallback: Claude로 셀렉터 재분석 시도
@@ -2235,10 +3554,7 @@ DOM 뼈대:
             await page.wait_for_timeout(3000)
 
             rows = await page.query_selector_all(row_sel)
-            # 행이 있고, 실제 데이터가 있는지 확인
-            _cart_btn_sel_pre = table.get("cart_btn")
-            _cart_in_row_pre = table.get("cart_btn_in_row", False)
-            _chk_sel_pre = table.get("row_checkbox")
+            # v1.5.43: 담기 버튼 행 내부 상대 CSS 1개 기반 필터
             valid_rows = []
             for r in rows:
                 tds = await r.query_selector_all('td')
@@ -2252,10 +3568,8 @@ DOM 뼈대:
                         filled += 1
                 if filled < 3:
                     continue
-                # 주문 가능 행만 (장바구니/공지 행 배제) — 셀렉터 있을 때만 동작
-                if not await self._row_has_order_button(
-                    r, _cart_btn_sel_pre, _cart_in_row_pre, _chk_sel_pre
-                ):
+                # 주문 가능 행 필터 — 저장된 cart_btn_in_row 매칭 (없으면 필터 무력화)
+                if not await self._row_has_order_button(r, cart_rel_stored):
                     continue
                 valid_rows.append(r)
 
@@ -2267,10 +3581,31 @@ DOM 뼈대:
             rows = []  # 유효한 행 없으면 다음 검색어 시도
 
         if not rows:
-            result["message"] = "검색 결과 없음"
-            result["out_of_stock"] = True
-            self._progress(f"  [{insurance_code}] 검색 결과 없음 ({idx}/{total})")
+            # v1.5.43 근본 수정: 검색 실패와 품절 분리.
+            # 검색 결과 0 ≠ 품절 (도매상 미취급/사이트 오류/쿼리 꼬임 가능성)
+            # out_of_stock 찍지 않고 retryable 로 설정 → 다른 도매상에 재할당
+            result["message"] = "검색 결과 없음 (품절 여부 불명 — 다른 도매상 재시도)"
+            result["retryable"] = True
+            self._progress(
+                f"  [{insurance_code}] 검색 결과 없음 — retryable "
+                f"({idx}/{total})"
+            )
             return result
+
+        # v1.5.43: DOM fingerprint 비교 — 사이트 구조 변경 자동 감지
+        stored_fp = table.get("row_fingerprint", "")
+        if stored_fp:
+            current_fp = await self._compute_row_fingerprint(rows[0])
+            if current_fp and current_fp != stored_fp:
+                self._progress(
+                    f"  [{insurance_code}] DOM fingerprint 불일치 → 재연동 유도"
+                )
+                result["retryable"] = True
+                result["invalidate_selectors"] = True
+                result["message"] = (
+                    "사이트 DOM 구조 변경 감지 — 재연동 필요"
+                )
+                return result
 
         # 셀렉터 캐시 없으면 첫 검색 시 테이블 구조 탐지
         if not table:
@@ -2313,10 +3648,9 @@ DOM 뼈대:
         stock_col = table.get("stock_col_idx")
         code_col = table.get("code_col_idx")
         price_col = table.get("price_col_idx")
-        qty_input_sel = table.get("qty_input")
-        cart_btn_sel = table.get("cart_btn")
-        cart_in_row = table.get("cart_btn_in_row", False)
-        chk_sel = table.get("row_checkbox")
+        # v1.5.43: row 내부 상대 셀렉터 (저장용 + 실행용 동일)
+        qty_rel = qty_rel_stored  # 함수 초반 세팅
+        cart_rel = cart_rel_stored
 
         # 각 행에서 candidates 수집
         candidates = []
@@ -2325,10 +3659,8 @@ DOM 뼈대:
             if not cells:
                 continue
 
-            # 주문 가능 행만 (장바구니/공지 행 배제)
-            if not await self._row_has_order_button(
-                row, cart_btn_sel, cart_in_row, chk_sel
-            ):
+            # 주문 가능 행만 (장바구니/공지 행 배제) — v1.5.43 새 시그니처
+            if not await self._row_has_order_button(row, cart_rel):
                 continue
 
             # 보험코드 확인 (해당 약품 행인지)
@@ -2367,11 +3699,16 @@ DOM 뼈대:
                 pack_price = int(price_text) if price_text else 0
 
             # 재고 확인
-            stock = 999  # 재고 컬럼 없으면 있다고 간주
+            # v1.5.42: 재고 텍스트에 숫자가 전혀 없으면 (버튼/이미지/빈 셀) → 999 유지
+            #          (과거엔 0 으로 간주 → 재고 있는데 품절 오감지하는 사고)
+            stock = 999  # 재고 컬럼 없거나 파싱 실패면 "있다" 로 간주 (보수적)
+            stock_text_raw = ""
             if stock_col is not None and stock_col < len(cells):
-                stock_text = (await cells[stock_col].inner_text()).strip()
-                stock_text = re.sub(r'[^\d]', '', stock_text)
-                stock = int(stock_text) if stock_text else 0
+                stock_text_raw = (await cells[stock_col].inner_text()).strip()
+                digits = re.sub(r'[^\d]', '', stock_text_raw)
+                if digits:
+                    stock = int(digits)
+                # else: stock = 999 유지
 
             if pack_size > 0 and stock > 0:
                 candidates.append({
@@ -2381,31 +3718,62 @@ DOM 뼈대:
                 })
 
         if not candidates:
-            # 재고 컬럼이 있고 전부 재고 0이면 → 품절
-            if stock_col is not None:
-                drug_name = ""
-                if name_col is not None and len(await rows[0].query_selector_all('td')) > name_col:
-                    cells = await rows[0].query_selector_all('td')
-                    drug_name = (await cells[name_col].inner_text()).strip()
-                result["drug_name"] = drug_name
+            # v1.5.42 근본 재설계: 품절 판정을 단일 신호(stock_col 숫자)에 의존하지 않는다.
+            # 후보 0 개의 진짜 원인은 여럿:
+            #   (a) 진짜 stock=0 또는 "품절"/"재고없음" 텍스트
+            #   (b) stock 컬럼이 버튼/이미지/빈 셀 (숫자 없음) — 과거 오감지 주범
+            #   (c) pack_size 파싱 실패
+            #   (d) code_col 불일치 (다른 약품)
+            # "명시적 품절" 이 확실할 때만 out_of_stock=True, 그 외엔 AI 시각 재확인 거쳐 판정.
+            drug_name = ""
+            if name_col is not None and rows:
+                try:
+                    cells0 = await rows[0].query_selector_all('td')
+                    if name_col < len(cells0):
+                        drug_name = (await cells0[name_col].inner_text()).strip()
+                except Exception:
+                    pass
+            result["drug_name"] = drug_name
+
+            explicit_oos = await self._check_explicit_out_of_stock(
+                rows, stock_col
+            )
+            if explicit_oos:
+                # (a) 모든 행이 명시적 "0" 또는 품절 키워드 → 진짜 품절
                 result["message"] = "재고 없음"
                 result["out_of_stock"] = True
                 self._progress(f"  [{insurance_code}] 재고 없음 ({idx}/{total})")
                 return result
 
-            # 재고 컬럼 없으면 규격 파싱 실패 — 첫 번째 행으로 폴백
-            pack_size = preferred_unit or 1
-            drug_name = ""
-            if name_col is not None and len(await rows[0].query_selector_all('td')) > name_col:
-                cells = await rows[0].query_selector_all('td')
-                drug_name = (await cells[name_col].inner_text()).strip()
-            result["drug_name"] = drug_name
-            result["pack_size"] = pack_size
-            result["box_qty"] = max(1, math.ceil(quantity / pack_size))
-            result["unit_options"] = [pack_size]
-            chosen = {"row": rows[0], "pack_size": pack_size,
-                      "drug_name": drug_name, "std_text": ""}
-            box_qty = result["box_qty"]
+            # 명시적이지 않음 → AI 시각 재확인 (false positive 품절 방지)
+            self._progress(
+                f"  [{insurance_code}] 후보 0 이지만 명시적 품절 아님 → "
+                f"AI 시각 재확인"
+            )
+            ai_oos = await self._ai_check_out_of_stock(
+                insurance_code, drug_name
+            )
+            if ai_oos is True:
+                result["message"] = "재고 없음 (시각 확인)"
+                result["out_of_stock"] = True
+                # 진단도 같이 업로드 (다음 분석 자료)
+                await self._upload_oos_diagnostic(
+                    insurance_code, rows, stock_col, table, "ai_confirmed"
+                )
+                return result
+
+            # AI 가 "재고 있음" 또는 판단 불가 → 품절 아닌 실패로 처리 +
+            # 진단 자동 업로드 (헤더/raw 텍스트/스크린샷)
+            await self._upload_oos_diagnostic(
+                insurance_code, rows, stock_col, table, "suspected_misdetection"
+            )
+            # v1.5.43: 후보 0 + AI 품절 아님 → retryable 실패 (첫행 폴백 제거,
+            # 다른 도매상에서 재시도하는 것이 안전)
+            result["message"] = (
+                "유효한 후보 행 없음 (품절 아닌 검색/파싱 문제) — 재시도 권장"
+            )
+            result["retryable"] = True
+            return result
         else:
             unit_options = sorted(set(c["pack_size"] for c in candidates))
             result["unit_options"] = unit_options
@@ -2430,19 +3798,42 @@ DOM 뼈대:
         row_el = chosen["row"]
         cells = await row_el.query_selector_all('td')
 
-        # 수량 입력 — 셀렉터 또는 컬럼 인덱스로
+        # ── v1.5.43 수량 입력: L1 저장 상대 css → L2 자동 탐지 ──
+        # v1.5.46: select_then_add 는 행 바깥 고정 위치에서 채움 → 담기 분기에서 처리
         qty_col = table.get("qty_col_idx")
         qty_filled = False
 
-        if qty_input_sel:
-            qty_el = await row_el.query_selector(qty_input_sel)
-            if qty_el:
-                await qty_el.click()
-                await qty_el.fill(str(box_qty))
-                qty_filled = True
+        if layout_mode == "select_then_add":
+            # 행 내부 수량 없음 — select_then_add 담기 분기에서 채움
+            pass
+        elif qty_rel:
+            try:
+                qty_el = await row_el.query_selector(qty_rel)
+                if qty_el:
+                    await qty_el.click()
+                    await qty_el.fill(str(box_qty))
+                    qty_filled = True
+            except Exception:
+                pass
 
-        if not qty_filled and qty_col is not None and qty_col < len(cells):
-            # 수량 컬럼 안의 input 찾기
+        if layout_mode != "select_then_add" and not qty_filled:
+            # row 내 text/number input 자동 탐지 (성공하면 self-heal 저장)
+            for auto_sel in ['input[type="text"]', 'input[type="number"]']:
+                try:
+                    qty_el = await row_el.query_selector(auto_sel)
+                    if qty_el:
+                        await qty_el.click()
+                        await qty_el.fill(str(box_qty))
+                        qty_filled = True
+                        # self-heal: 다음부턴 저장된 셀렉터 사용
+                        if not qty_rel:
+                            self._update_row_selector("qty_input_in_row", auto_sel)
+                        break
+                except Exception:
+                    continue
+
+        if layout_mode != "select_then_add" and not qty_filled \
+                and qty_col is not None and qty_col < len(cells):
             qty_el = await cells[qty_col].query_selector('input')
             if qty_el:
                 await qty_el.click()
@@ -2452,70 +3843,158 @@ DOM 뼈대:
         if qty_filled:
             await page.wait_for_timeout(300)
 
-        # 행 체크박스 — 페이지 레벨 담기 버튼일 때 필수
-        if not cart_in_row:
-            chk_sel = table.get("row_checkbox")
-            if chk_sel:
-                chk = await row_el.query_selector(chk_sel)
-                if chk:
-                    checked = await chk.is_checked()
-                    if not checked:
-                        await chk.click(force=True)
-                        await page.wait_for_timeout(300)
-            else:
-                # 체크박스 셀렉터 미저장 — 자동 탐지
-                for sel in ['input[type="checkbox"]', 'input[name^="chk"]']:
-                    chk = await row_el.query_selector(sel)
-                    if chk:
-                        checked = await chk.is_checked()
-                        if not checked:
-                            await chk.click(force=True)
-                            await page.wait_for_timeout(300)
-                        break
+        # v1.5.45: 담기 전 스냅샷 (검증용)
+        before_cart_snap = await self._snapshot_tables()
 
-        # 담기/추가 버튼 — 셀렉터 또는 컬럼 인덱스로
-        cart_col = table.get("cart_col_idx")
+        # ── v1.5.44+ 담기 실행: layout_mode 분기 ──
         cart_clicked = False
+        used_cart_sel = ""
+        heal_needed = False
 
-        if cart_btn_sel:
-            if cart_in_row:
-                btn = await row_el.query_selector(cart_btn_sel)
-            else:
-                btn = await page.query_selector(cart_btn_sel)
-            if btn:
-                await btn.click(force=True)
-                cart_clicked = True
-
-        if not cart_clicked and cart_col is not None and cart_col < len(cells):
-            # 해당 컬럼 안의 버튼/링크 찾기
-            btn = await cells[cart_col].query_selector('button, a, input[type="button"]')
-            if btn:
-                await btn.click()
-                cart_clicked = True
-
-        if not cart_clicked:
-            # 행 전체에서 추가/담기 버튼 마지막 시도
-            for sel in ['button:has-text("추가")', 'button:has-text("담기")',
-                        'a:has-text("추가")', 'a:has-text("담기")']:
-                btn = await row_el.query_selector(sel)
-                if btn:
-                    await btn.click()
-                    cart_clicked = True
-                    break
-
-        if cart_clicked:
-            await page.wait_for_timeout(2000)
-
-            # 페이지 레벨 담기 후 체크박스 해제 (다음 약품 중복 담기 방지)
-            if not cart_in_row:
+        # 패턴 C (v1.5.46): select_then_add (지오영)
+        # 결과 행 클릭 → 고정 위치 qty_input 채우기 → 고정 위치 cart_btn 클릭
+        if layout_mode == "select_then_add" and select_cart_btn_stored:
+            select_method = table.get("select_method", "row_click")
+            # 1. 결과 행 선택 (제품정보 패널 활성화)
+            if select_method == "row_click":
                 try:
-                    chk_sel = table.get("row_checkbox", 'input[type="checkbox"]')
-                    chk = await row_el.query_selector(chk_sel)
+                    await row_el.click(force=True)
+                    await page.wait_for_timeout(600)
+                except Exception as e:
+                    self._progress(
+                        f"  [{insurance_code}] 행 선택 실패: {e}"
+                    )
+            # 2. 고정 위치 qty input 채우기
+            if select_qty_input_stored:
+                try:
+                    qty_el = await page.query_selector(select_qty_input_stored)
+                    if qty_el:
+                        await qty_el.click()
+                        await qty_el.fill(str(box_qty))
+                        qty_filled = True
+                        await page.wait_for_timeout(200)
+                except Exception as e:
+                    self._progress(
+                        f"  [{insurance_code}] 수량 입력 실패: {e}"
+                    )
+            # 3. 고정 위치 담기 버튼 클릭
+            try:
+                cart_btn_el = await page.query_selector(select_cart_btn_stored)
+                if cart_btn_el:
+                    await cart_btn_el.click(force=True)
+                    cart_clicked = True
+                    used_cart_sel = select_cart_btn_stored
+            except Exception as e:
+                self._progress(
+                    f"  [{insurance_code}] 담기 클릭 실패: {e}"
+                )
+
+        # 패턴 B: 전역 담기 버튼 + row 체크박스 (세화 패턴)
+        #          또는 체크박스 없는 변종 (아남) — row_checkbox_stored 빈 문자열이면 skip
+        if not cart_clicked and layout_mode == "global_cart_btn" and global_cart_stored:
+            # row 체크박스 체크 (이미 체크면 skip)
+            if row_checkbox_stored:
+                try:
+                    chk = await row_el.query_selector(row_checkbox_stored)
+                    if chk and not await chk.is_checked():
+                        await chk.click(force=True)
+                        await page.wait_for_timeout(200)
+                except Exception:
+                    pass
+            # 페이지 전역 담기 버튼 클릭
+            try:
+                g_btn = await page.query_selector(global_cart_stored)
+                if g_btn:
+                    await g_btn.click(force=True)
+                    cart_clicked = True
+                    used_cart_sel = global_cart_stored
+            except Exception:
+                pass
+            # 담긴 후 체크박스 해제 (다음 약품 중복 방지)
+            if cart_clicked and row_checkbox_stored:
+                await page.wait_for_timeout(1500)
+                try:
+                    chk = await row_el.query_selector(row_checkbox_stored)
                     if chk and await chk.is_checked():
                         await chk.click(force=True)
                         await page.wait_for_timeout(200)
                 except Exception:
                     pass
+
+        # 패턴 A: L1 저장된 row 상대 CSS (layout_mode=row_cart_btn)
+        if not cart_clicked and cart_rel:
+            try:
+                btn = await row_el.query_selector(cart_rel)
+                if btn:
+                    await btn.click(force=True)
+                    cart_clicked = True
+                    used_cart_sel = cart_rel
+            except Exception:
+                pass
+
+        # L2: 휴리스틱 (CSS-only, :has-text 미사용)
+        if not cart_clicked:
+            CART_HEURISTICS = [
+                'input[type="image"][alt*="담기"]',
+                'input[type="image"][alt*="cart"]',
+                'input[type="image"][alt*="추가"]',
+                'input[type="image"][src*="bag"]',
+                'input[type="image"][src*="cart"]',
+                'img[alt*="담기"]',
+                'img[alt*="cart"]',
+                'img[src*="bag"]',
+                'img[src*="cart"]',
+                'a[onclick*="담기"]',
+                'a[onclick*="cart"]',
+                'a[onclick*="Cart"]',
+                'a[onclick*="bag"]',
+                'button[onclick*="담기"]',
+                'button[onclick*="cart"]',
+                '[role="button"][aria-label*="담기"]',
+                'a.btn-bag', 'a.btn-cart', 'a.bag', 'a.cart',
+            ]
+            for heur in CART_HEURISTICS:
+                try:
+                    btn = await row_el.query_selector(heur)
+                    if btn:
+                        await btn.click(force=True)
+                        cart_clicked = True
+                        used_cart_sel = heur
+                        heal_needed = True
+                        self._progress(f"  휴리스틱 담기 매칭: {heur}")
+                        break
+                except Exception:
+                    continue
+
+        # L3: AI Vision — row 내부 담기 버튼 질의 (비용 → 실패 경로에서만)
+        if not cart_clicked:
+            self._progress("  L2 휴리스틱 실패 → AI Vision 담기 버튼 질의...")
+            try:
+                # 현재 row 의 outerHTML 샘플을 프롬프트에 포함
+                row_html = await row_el.evaluate(
+                    "(el) => (el.outerHTML || '').slice(0, 3000)"
+                )
+                ai_rel = await self._ai_suggest_row_relative_cart(row_html)
+                if ai_rel:
+                    try:
+                        btn = await row_el.query_selector(ai_rel)
+                        if btn:
+                            await btn.click(force=True)
+                            cart_clicked = True
+                            used_cart_sel = ai_rel
+                            heal_needed = True
+                            self._progress(f"  AI 담기 매칭: {ai_rel}")
+                    except Exception:
+                        pass
+            except Exception as e:
+                self._progress(f"  AI 담기 폴백 오류: {e}")
+
+        # self-heal: L2/L3 성공 셀렉터를 저장해 다음 주문부터 L1 적중
+        if cart_clicked and heal_needed and used_cart_sel:
+            self._update_row_selector("cart_btn_in_row", used_cart_sel)
+
+        if cart_clicked:
+            await page.wait_for_timeout(2000)
 
         # 팝업 닫기 (공통 패턴)
         for popup_sel in [
@@ -2537,16 +4016,83 @@ DOM 뼈대:
             f"generic_{self._wid}_cart_{idx:02d}_{insurance_code}.png"
         )
 
-        result["success"] = cart_clicked
+        # v1.5.45 회색지대 복원 — 담기 클릭 성공 ≠ 실제 담김 보장.
+        # 온보딩과 동일한 2단 검증 (DOM diff + AI 시각) 후 결과 확정.
         if cart_clicked:
-            result["message"] = f"{chosen.get('std_text', '')} x{box_qty} 담기 완료"
-        else:
-            result["message"] = "담기 버튼을 찾을 수 없음"
+            after_cart_snap = await self._snapshot_tables()
+            drug_name_for_verify = (
+                result.get("drug_name") or chosen.get("drug_name") or ""
+            )
+            verify = await self._verify_cart_added(
+                drug_name=drug_name_for_verify,
+                insurance_code=insurance_code,
+                before=before_cart_snap,
+                after=after_cart_snap,
+            )
+            if verify.get("verified"):
+                result["success"] = True
+                result["message"] = (
+                    f"{chosen.get('std_text', '')} x{box_qty} 담기 완료"
+                )
+                return result
+            # AI 시각 폴백
+            visual_ok = await self._ai_visual_verify_cart(
+                before_cart_snap, after_cart_snap, drug_name_for_verify
+            )
+            if visual_ok:
+                result["success"] = True
+                result["message"] = (
+                    f"{chosen.get('std_text', '')} x{box_qty} 담기 완료 (시각 확인)"
+                )
+                return result
+            # 클릭은 됐지만 담김 확인 실패 → 회색지대 금지 원칙 → 실패 처리
+            self._progress(
+                f"  [{insurance_code}] 담기 버튼 클릭은 성공했지만 장바구니 반영 없음 "
+                f"— 셀렉터 오탐 가능성, 재연동 유도"
+            )
+            result["success"] = False
+            result["retryable"] = True
+            result["invalidate_selectors"] = True
+            result["message"] = (
+                "담기 클릭 성공 but DOM/시각 검증 실패 — 재연동 필요"
+            )
+            # CART_FAIL_DIAG 진단 자동 업로드
+            try:
+                await self._upload_cart_fail_diagnostic(
+                    insurance_code=insurance_code,
+                    drug_name=drug_name_for_verify,
+                    used_cart_sel=used_cart_sel,
+                    layout_mode=layout_mode,
+                    before_snap=before_cart_snap,
+                    after_snap=after_cart_snap,
+                )
+            except Exception:
+                pass
+            return result
+
+        # 담기 버튼 클릭 자체 실패 (L1~L3 모두 실패)
+        result["success"] = False
+        result["retryable"] = True
+        result["message"] = "담기 버튼을 찾을 수 없음 — 재연동 필요"
+        result["invalidate_selectors"] = True
+        try:
+            await self._upload_cart_fail_diagnostic(
+                insurance_code=insurance_code,
+                drug_name=result.get("drug_name", ""),
+                used_cart_sel="",
+                layout_mode=layout_mode,
+                before_snap=before_cart_snap,
+                after_snap=None,
+            )
+        except Exception:
+            pass
         return result
 
     async def _confirm_order(self) -> None:
         confirm = self._selectors.get("confirm", {})
         btn_sel = confirm.get("confirm_btn")
+        # v1.5.46: 주문확정 버튼이 iframe 안에 있는 경우 지원 (아남)
+        confirm_iframe = confirm.get("iframe", "")
 
         if not btn_sel:
             # 캐시 없으면 탐지
@@ -2557,7 +4103,11 @@ DOM 뼈대:
                 self._save_selectors(self._selectors)
 
         if btn_sel:
-            btn = self._page.locator(btn_sel)
+            if confirm_iframe:
+                # iframe 안 버튼
+                btn = self._page.frame_locator(confirm_iframe).locator(btn_sel)
+            else:
+                btn = self._page.locator(btn_sel)
             await btn.click(force=True)
             await self._page.wait_for_timeout(5000)
         else:
@@ -2660,23 +4210,30 @@ DOM 뼈대:
     async def _set_date_range_5years(self, page, search: dict):
         """이력 검색 기간을 최소 5년 전으로 설정한다.
 
-        1) config에 date_from 셀렉터가 있으면 직접 값 설정
+        1) config에 date_from 셀렉터가 있으면 직접 값 설정 (date_to 도 함께)
         2) 기간 버튼(5년/3년/1년 등)이 있으면 가장 긴 것 클릭
         3) 둘 다 없으면 페이지의 날짜 input을 자동 탐지해서 설정
+
+        v1.5.47: AngularJS ng-model 트리거 + 사이트별 date 포맷 (- / .) 자동 시도.
+        date_to 도 함께 처리 (오늘 날짜).
         """
         from datetime import datetime, timedelta
-        five_years_ago = (datetime.now() - timedelta(days=365 * 5)).strftime("%Y.%m.%d")
+        now = datetime.now()
+        five_years_ago_dt = now - timedelta(days=365 * 5)
 
-        # 1) config에 명시된 date_from 셀렉터
-        date_from_sel = search.get("date_from")
+        date_from_sel = (search.get("date_from") or "").strip()
+        date_to_sel = (search.get("date_to") or "").strip()
+
+        # 1) config에 명시된 date_from / date_to 셀렉터
         if date_from_sel:
-            try:
-                await page.evaluate(
-                    f'document.querySelector("{date_from_sel}").value = "{five_years_ago}"'
-                )
+            ok = await self._fill_date_input(page, date_from_sel, five_years_ago_dt)
+            if ok and date_to_sel:
+                try:
+                    await self._fill_date_input(page, date_to_sel, now)
+                except Exception:
+                    pass
+            if ok:
                 return
-            except Exception:
-                pass
 
         # 2) 기간 버튼 — 긴 순서대로 시도
         period_btn = search.get("period_btn")
@@ -2714,11 +4271,50 @@ DOM 뼈대:
                 return null;
             }''')
             if date_input:
-                await page.evaluate(
-                    f'document.querySelector(\'{date_input}\').value = "{five_years_ago}"'
-                )
+                await self._fill_date_input(page, date_input, five_years_ago_dt)
         except Exception:
             pass
+
+    async def _fill_date_input(self, page, sel: str, dt) -> bool:
+        """date input 에 값을 채우고 native + AngularJS ng-model 트리거.
+
+        사이트마다 받는 포맷이 달라서 (- / . / 없음) 여러 포맷 차례로 시도.
+        AngularJS 사이트 (세화 등) 는 input/change 이벤트만으론 ng-model 안 잡혀서
+        angular.element(el).triggerHandler('input') 까지 호출.
+        """
+        formats = [
+            dt.strftime("%Y-%m-%d"),
+            dt.strftime("%Y.%m.%d"),
+            dt.strftime("%Y%m%d"),
+            dt.strftime("%Y/%m/%d"),
+        ]
+        for v in formats:
+            try:
+                # JSON.stringify 로 셀렉터 안에 따옴표/특수문자 안전 처리
+                js = (
+                    "(function(sel, val){"
+                    "var el = document.querySelector(sel);"
+                    "if (!el) return null;"
+                    "el.value = val;"
+                    "try { el.dispatchEvent(new Event('input', {bubbles:true})); } catch(e){}"
+                    "try { el.dispatchEvent(new Event('change', {bubbles:true})); } catch(e){}"
+                    "try { el.dispatchEvent(new Event('blur', {bubbles:true})); } catch(e){}"
+                    "if (window.angular) {"
+                    "  try { window.angular.element(el).triggerHandler('input'); } catch(e){}"
+                    "  try { window.angular.element(el).triggerHandler('change'); } catch(e){}"
+                    "}"
+                    "return el.value;"
+                    "})"
+                )
+                import json as _json
+                result = await page.evaluate(
+                    f"{js}({_json.dumps(sel)}, {_json.dumps(v)})"
+                )
+                if result is not None:
+                    return True
+            except Exception:
+                continue
+        return False
 
     async def search_history_async(self, drug_name: str,
                                    lot_number: str = "",

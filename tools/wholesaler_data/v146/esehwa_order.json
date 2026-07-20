@@ -1,0 +1,43 @@
+{
+  "_note": "세화약품 주문 셀렉터 — global_cart_btn 변종 (체크박스 없음, AngularJS, qty>0 가 selection 역할). 담기 클릭 후 native confirm dialog 가 뜨고 엔진이 자동 수락 (base.py page.on dialog handler).",
+  "wid": "esehwa",
+  "name": "세화",
+  "url": "https://www.esehwa.co.kr/contents/order/order.asp",
+
+  "login": {
+    "id_input": "input[type=\"text\"]:not([readonly])",
+    "pw_input": "input[type=\"password\"]",
+    "login_btn": "button:has-text(\"로그인\")"
+  },
+
+  "search": {
+    "search_input": "#tx_pnm",
+    "search_btn": ""
+  },
+
+  "table": {
+    "layout_mode": "global_cart_btn",
+    "result_rows": "tr[data-ng-repeat*=\"physic.list\"]",
+    "global_cart_btn": "span.btn-submit",
+    "clear_all_btn": "span.btn-cancel",
+    "qty_input_in_row": "input.list_qty",
+    "row_checkbox_in_row": "",
+    "cart_rows_sel": "",
+    "code_col_idx": null,
+    "name_col_idx": 0,
+    "unit_col_idx": 1,
+    "stock_col_idx": 3,
+    "price_col_idx": 4,
+    "_comment_behaviors": "v1.5.46 사이트 습성 — AngularJS ng-click 'InsertBag(\"btn\")', native confirm dialog 자동 수락",
+    "qty_commit": "tab",
+    "cart_btn_click": "native_then_js",
+    "cart_verify_timeout_ms": 15000,
+    "post_click_wait_ms": 800,
+    "schema_version": "v1.5.46",
+    "auto_detected": false
+  },
+
+  "confirm": {
+    "confirm_btn": "span.btn-order"
+  }
+}

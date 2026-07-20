@@ -53,8 +53,15 @@ class SettingsTab(QWidget):
         self._on_wholesaler_changed = on_wholesaler_changed
         self._on_schedule_changed = on_schedule_changed
         self._inventory_loaded = False
+        # v1.5.46: 설정 초기 로드 시 signal 무시 플래그
+        # (setChecked 호출이 toggled 를 발생시켜 즉시저장 팝업이 뜨는 것 방지)
+        self._loading = False
         self._init_ui()
-        self._load_all()
+        self._loading = True
+        try:
+            self._load_all()
+        finally:
+            self._loading = False
 
     def _init_ui(self):
         outer = QVBoxLayout(self)
@@ -146,7 +153,7 @@ class SettingsTab(QWidget):
         self.ws_table.setColumnWidth(5, 200)
         self.ws_table.setColumnWidth(6, 70)
         self.ws_table.setColumnWidth(7, 70)
-        self.ws_table.setColumnWidth(8, 80)
+        self.ws_table.setColumnWidth(8, 90)
         self.ws_table.setStyleSheet(
             "QTableWidget { font-family: 'Malgun Gothic'; font-size: 13px; }"
         )
@@ -286,10 +293,11 @@ class SettingsTab(QWidget):
 
         self._confirm_auto.setChecked(True)
 
-        save_confirm_btn = QPushButton("저장")
-        save_confirm_btn.setStyleSheet(btn_success())
-        save_confirm_btn.clicked.connect(self._save_confirm_settings)
-        confirm_lay.addWidget(save_confirm_btn, alignment=Qt.AlignmentFlag.AlignRight)
+        # v1.5.46: 클릭 → 팝업 → 즉시 적용 (저장 버튼 제거)
+        self._confirm_auto.toggled.connect(
+            lambda c: self._on_confirm_mode_toggled(c, "auto"))
+        self._confirm_cart.toggled.connect(
+            lambda c: self._on_confirm_mode_toggled(c, "cart_only"))
 
         layout.addWidget(confirm_card)
 
@@ -398,6 +406,11 @@ class SettingsTab(QWidget):
         self._sched_mode_group.addButton(self._sched_radio_multi, 0)
         self._sched_mode_group.addButton(self._sched_radio_once, 1)
         self._sched_radio_multi.setChecked(True)
+        # v1.5.46: 모드 선택 시 즉시 적용
+        self._sched_radio_multi.toggled.connect(
+            lambda c: self._on_sched_mode_toggled(c, "multiple"))
+        self._sched_radio_once.toggled.connect(
+            lambda c: self._on_sched_mode_toggled(c, "once"))
         sched_lay.addWidget(self._sched_radio_multi)
 
         multi_desc = QLabel("  각 시간에 이전 예약 시간 이후 처방만 주문합니다.")
@@ -452,7 +465,9 @@ class SettingsTab(QWidget):
 
         save_sched_btn = QPushButton("예약 설정 저장")
         save_sched_btn.setStyleSheet(btn_success())
-        save_sched_btn.clicked.connect(self._save_schedule_settings)
+        save_sched_btn.clicked.connect(
+            lambda: (self._save_schedule_settings(),
+                     self._show_toast("✅ 저장됨")))
         sched_lay.addWidget(save_sched_btn, alignment=Qt.AlignmentFlag.AlignRight)
 
         layout.addWidget(sched_card)
@@ -525,6 +540,12 @@ class SettingsTab(QWidget):
         check_upd_btn.setStyleSheet(btn_primary())
         check_upd_btn.clicked.connect(self._manual_check_update)
         upd_btn_row.addWidget(check_upd_btn)
+
+        open_dir_btn = QPushButton("설치 폴더 열기")
+        open_dir_btn.setStyleSheet(btn_primary(bg="#6B7280", hover="#4B5563"))
+        open_dir_btn.setToolTip("PharmAuto 가 설치된 폴더를 탐색기로 엽니다.")
+        open_dir_btn.clicked.connect(self._open_install_dir)
+        upd_btn_row.addWidget(open_dir_btn)
 
         self.upd_status_label = QLabel("")
         self.upd_status_label.setStyleSheet(DESCRIPTION)
@@ -665,6 +686,7 @@ class SettingsTab(QWidget):
         QMessageBox.information(self, "저장", "약국 연결 설정이 저장되었습니다.")
 
     def _test_db_connection(self):
+        """DB 연결 + 실제 처방 테이블 쿼리까지 성공해야 '완전 연결'로 표시한다."""
         self.db_status_label.setText("연결 테스트 중...")
         self.db_status_label.setStyleSheet(DESCRIPTION)
         try:
@@ -672,18 +694,41 @@ class SettingsTab(QWidget):
             from core.db_conn import build_conn_str
             settings = _load_json("settings.json")
             db = settings.get("db", {})
-            # UI 에서 편집한 값이 있으면 반영 (현재는 서버/DB/드라이버만 편집 가능)
             db = dict(db)
             db["server"] = self.db_server_input.text().strip() or db.get("server") or "localhost"
             db["database"] = self.db_name_input.text().strip() or db.get("database") or "eP_PHARM"
             db["driver"] = self.db_driver_input.text().strip() or db.get("driver") or "SQL Server"
             conn_str = build_conn_str(db)
             conn = pyodbc.connect(conn_str, timeout=3, readonly=True)
-            conn.close()
-            self.db_status_label.setText("연결 성공!")
-            self.db_status_label.setStyleSheet(f"color: {_GREEN}; font-weight: 700;")
         except Exception:
             self.db_status_label.setText("연결 실패 - 서버/드라이버 확인 필요")
+            self.db_status_label.setStyleSheet(f"color: {_RED}; font-weight: 700;")
+            return
+
+        # v1.5.40: 연결만으로 끝내지 않고 실제 처방 테이블 쿼리까지 성공해야 "완전 연결"
+        program = settings.get("pharmacy_program", "")
+        if program == "upharm":
+            probe_sql = "SELECT TOP 1 약품ID FROM tbl조제약품"
+            probe_name = "유팜 조제약품 테이블"
+        else:
+            probe_sql = "SELECT TOP 1 SD_ISCODE FROM STOCKDATE"
+            probe_name = "이팜 STOCKDATE 테이블"
+
+        try:
+            cur = conn.cursor()
+            cur.execute(probe_sql)
+            cur.fetchone()  # 결과가 없어도 쿼리 성공이면 스키마 접근 OK
+            conn.close()
+            self.db_status_label.setText(f"완전 연결 (처방 테이블 접근 OK)")
+            self.db_status_label.setStyleSheet(f"color: {_GREEN}; font-weight: 700;")
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            self.db_status_label.setText(
+                f"연결만 OK - {probe_name} 접근 실패 (권한/스키마 확인)"
+            )
             self.db_status_label.setStyleSheet(f"color: {_RED}; font-weight: 700;")
 
     # --- 도매상 ---
@@ -739,15 +784,15 @@ class SettingsTab(QWidget):
         del_btn.clicked.connect(lambda _, r=row: self._del_wholesaler_row(r))
         self.ws_table.setCellWidget(row, 7, del_btn)
 
-        # 구조 진단 버튼 (수동 셀렉터 주입 보조용)
-        diag_btn = QPushButton("진단")
+        # 연동 재확인 버튼 — full_onboard 를 다시 돌려 셀렉터를 재검증한다
+        diag_btn = QPushButton("재연동")
         diag_btn.setToolTip(
-            "도매상 주문 페이지 DOM 구조를 서버에 업로드합니다. "
-            "연동 오류 시 개발자가 분석할 수 있도록 도움을 줍니다."
+            "로그인부터 담기까지 자동으로 다시 확인합니다.\n"
+            "연동 실패 상태라면 서버 업데이트 후에 눌러주세요."
         )
         diag_btn.setStyleSheet(btn_small_primary())
         diag_btn.clicked.connect(
-            lambda _, r=row, w=wid, d=data: self._run_ws_structure_analysis(r, w, d)
+            lambda _, r=row, w=wid, d=data: self._run_ws_test(r, w, d)
         )
         self.ws_table.setCellWidget(row, 8, diag_btn)
 
@@ -769,7 +814,7 @@ class SettingsTab(QWidget):
     }
 
     def _check_ws_status(self, row: int, wid: str, data: dict):
-        """도매상 상태를 표시한다. 저장된 상태가 있으면 그대로, 없으면 첫 1회 테스트."""
+        """도매상 상태를 표시한다. onboard_status 기반 뱃지(✅/❌/⏳) 적용."""
         status_item = self.ws_table.item(row, 5)
 
         if not data.get("id") or not data.get("pw"):
@@ -781,26 +826,72 @@ class SettingsTab(QWidget):
             status_item.setForeground(Qt.GlobalColor.gray)
             return
 
-        # 저장된 상태가 있으면 표시
+        # onboard_status 결정 (신규 필드 우선, 없으면 과거 connection_status 기반)
         saved = data.get("connection_status", "")
-        if saved:
-            status_item.setText(saved)
-            status_item.setForeground(
-                self._STATUS_COLORS.get(saved, Qt.GlobalColor.black)
-            )
-            # 실패 상태면 자동 재테스트 (기존 상태 유지하며 백그라운드 실행)
-            _FAIL_STATUSES = {"로그인 실패", "장바구니 실패", "접속 불가",
-                              "사이트 오류", "연동 오류"}
-            if saved in _FAIL_STATUSES:
-                status_item.setText(f"{saved} → 재확인 중...")
-                status_item.setForeground(Qt.GlobalColor.blue)
-                self._run_ws_test(row, wid, data)
+        ob = data.get("onboard_status", "")
+        if not ob:
+            if saved == "정상":
+                ob = "verified"
+            elif saved:
+                ob = "failed"
+            else:
+                ob = "pending"
+
+        ob_error = data.get("onboard_error", "")
+
+        if ob == "verified":
+            # v1.5.46: onboard 가 verified 면 connection_status 의 오래된
+            # "연동 오류" 같은 잔재는 무시 (주문 실행 중 재고 부족 등으로
+            # _update_ws_status 가 덮어쓴 값). 현재 연동 상태는 정상.
+            if saved and "이력검색 미지원" in saved:
+                from PyQt6.QtGui import QColor
+                status_item.setText(f"✅ {saved}")
+                status_item.setForeground(QColor("#F59E0B"))
+            else:
+                status_item.setText("✅ 정상")
+                status_item.setForeground(Qt.GlobalColor.darkGreen)
+            status_item.setToolTip("")
             return
 
-        # 저장된 상태 없음 → 첫 1회 테스트 (백그라운드)
-        status_item.setText("확인 중...")
+        if ob == "failed":
+            base = saved if saved else "실패"
+            status_item.setText(f"❌ {base} → 재확인 중...")
+            status_item.setForeground(Qt.GlobalColor.blue)
+            if ob_error:
+                status_item.setToolTip(ob_error)
+            # 실패 상태면 자동 재테스트
+            self._run_ws_test(row, wid, data)
+            return
+
+        # pending
+        status_item.setText("⏳ 확인 중...")
         status_item.setForeground(Qt.GlobalColor.blue)
+        status_item.setToolTip("")
         self._run_ws_test(row, wid, data)
+
+    def trigger_reonboard(self, wid: str) -> bool:
+        """외부(main.py 재연동 감지)에서 호출하는 재연동 트리거.
+
+        Returns: 실행 시작됐으면 True.
+        """
+        ws = _load_json("wholesalers.json")
+        data = ws.get(wid)
+        if not data:
+            return False
+        target_name = data.get("name", "")
+        for row in range(self.ws_table.rowCount()):
+            name_item = self.ws_table.item(row, 0)
+            if name_item and name_item.text() == target_name:
+                self._run_ws_test(row, wid, data)
+                return True
+        # 테이블에서 행을 찾지 못하면 새로고침 후 재시도
+        self._load_wholesalers()
+        for row in range(self.ws_table.rowCount()):
+            name_item = self.ws_table.item(row, 0)
+            if name_item and name_item.text() == target_name:
+                self._run_ws_test(row, wid, data)
+                return True
+        return False
 
     def _run_ws_test(self, row: int, wid: str, data: dict):
         """백그라운드에서 풀 연동 테스트 (로그인→장바구니) 후 결과 저장.
@@ -808,6 +899,21 @@ class SettingsTab(QWidget):
         Generic 도매상은 실패 시 셀렉터를 초기화하고 AI 재분석을 반복한다.
         최대 MAX_ATTEMPTS회 시도 후 결과를 반환한다.
         """
+        # v1.5.46: 버튼 클릭 즉시 "확인 중..." UI 피드백.
+        # 기존엔 QThread 만 시작하고 카드 상태 변경 없어서 클릭된 줄 몰랐음.
+        try:
+            if row < self.ws_table.rowCount():
+                status_item = self.ws_table.item(row, 5)
+                if status_item:
+                    status_item.setText("⏳ 확인 중... (최대 30초)")
+                    status_item.setForeground(Qt.GlobalColor.blue)
+                    status_item.setToolTip(
+                        "로그인 → 검색 → 담기 자동 검증 중. "
+                        "완료되면 결과가 표시됩니다."
+                    )
+        except Exception:
+            pass
+
         from PyQt6.QtCore import QThread, pyqtSignal
 
         class _FullTester(QThread):
@@ -831,6 +937,24 @@ class SettingsTab(QWidget):
                 with open(log_path, "a", encoding="utf-8") as f:
                     f.write(f"[{timestamp}] {msg}\n")
                 print(msg)
+
+            def _finish(self, status_text: str, stage: str = "", error: str = ""):
+                """종료 지점: onboard_status 기록 + 시그널 emit."""
+                try:
+                    from core.wholesaler_state import (
+                        set_onboard_status,
+                        STATUS_VERIFIED, STATUS_FAILED,
+                    )
+                    ok = "정상" in status_text
+                    set_onboard_status(
+                        self._wid,
+                        STATUS_VERIFIED if ok else STATUS_FAILED,
+                        stage=stage if not ok else "",
+                        error=error if not ok else "",
+                    )
+                except Exception as e:
+                    self._write_log(f"  onboard_status 저장 실패: {e}")
+                self.done.emit(self._row, self._wid, status_text)
 
             def _upload_dedicated_selectors(self, wid, config, ws_class):
                 """전용 클래스의 셀렉터 정보를 클라우드에 공유한다."""
@@ -920,7 +1044,8 @@ class SettingsTab(QWidget):
                     self._write_log(f"  복호화 완료")
                 except Exception as e:
                     self._write_log(f"  복호화 실패: {e}")
-                    self.done.emit(self._row, self._wid, "연동 오류")
+                    self._finish("연동 오류", stage="decrypt",
+                                 error="자격증명 복구 실패 — 사용자 전환 여부 확인")
                     return
 
                 # 1단계: URL 접속 확인
@@ -929,16 +1054,19 @@ class SettingsTab(QWidget):
                     resp = _req.get(config["url"], timeout=5, allow_redirects=True)
                     self._write_log(f"  URL 접속: {resp.status_code}")
                     if resp.status_code >= 500:
-                        self.done.emit(self._row, self._wid, "사이트 오류")
+                        self._finish("사이트 오류", stage="network",
+                                     error=f"사이트 응답 오류 ({resp.status_code})")
                         return
                 except Exception as e:
                     self._write_log(f"  URL 접속 실패: {e}")
-                    self.done.emit(self._row, self._wid, "접속 불가")
+                    self._finish("접속 불가", stage="network",
+                                 error="사이트 접속 불가 — URL/네트워크 확인")
                     return
 
                 # 2단계: 자가 치유 루프 (최대 2회 재분석→재시도)
                 MAX_ATTEMPTS = 2
                 last_status = "연동 오류"
+                result = None
 
                 try:
                     from core.order_engine import _get_wholesaler_class
@@ -961,10 +1089,14 @@ class SettingsTab(QWidget):
                         if is_generic:
                             if attempt == 0:
                                 # 1회차: 클라우드 조회 → 없으면 휴리스틱 분석
+                                # v1.5.49: 수동 셀렉터 (auto_detected=False) 1순위.
+                                # 기존 로직 `not cur_sel.get("auto_detected")` 가 거꾸로
+                                # 였음 — 수동 셀렉터일수록 분석 강제 실행 → 우리 정상
+                                # 셀렉터를 잘못된 자동 탐지 결과로 덮어쓰는 무한루프.
                                 from core.selector_store import load_selectors
                                 cur_sel = load_selectors(self._wid,
                                                          url=config.get("url", ""))
-                                if not cur_sel or not cur_sel.get("auto_detected"):
+                                if not cur_sel:
                                     self._write_log(f"  셀렉터 없음 → 사이트 분석...")
                                     ws_analyze = ws_class(config)
                                     asyncio.run(ws_analyze.analyze_site(headless=True))
@@ -978,8 +1110,10 @@ class SettingsTab(QWidget):
 
                         # 연동 테스트 실행
                         # v1.5.39: generic 도매상은 full_onboard 로 셀렉터 자동 확정까지 수행
+                        # v1.5.46: 수동 셀렉터 기반 전용 클래스(anam 등)도 full_onboard 사용
                         ws_test = ws_class(config)
-                        if is_generic:
+                        uses_full_onboard = hasattr(ws_class, "full_onboard")
+                        if uses_full_onboard:
                             self._write_log("  자동 온보딩(full_onboard) 실행 중...")
                             result = asyncio.run(ws_test.full_onboard(headless=True))
                             if not result.get("success"):
@@ -1053,9 +1187,16 @@ class SettingsTab(QWidget):
                     self._upload_diagnostic(
                         self._wid, config, last_status, is_generic)
 
+                # 실패 상세(stage/error) 추출 — result 는 마지막 시도 결과
+                fin_stage = ""
+                fin_error = ""
+                if last_status != "정상" and isinstance(result, dict):
+                    fin_stage = result.get("stage", "") or ""
+                    fin_error = (result.get("message") or "")[:200]
+
                 # 상세는 로그에만 남김
                 self._write_log(f"  최종 결과: {last_status}")
-                self.done.emit(self._row, self._wid, last_status)
+                self._finish(last_status, stage=fin_stage, error=fin_error)
 
         tester = _FullTester(row, wid, data)
         tester.done.connect(self._on_ws_test_done)
@@ -1079,24 +1220,57 @@ class SettingsTab(QWidget):
             except Exception:
                 history_ok = False
 
-        # UI 업데이트
+        # UI 업데이트 — onboard_status 기반 뱃지(✅/❌)
         display_text = status_text
         if status_text == "정상" and not history_ok:
             display_text = "정상 (이력검색 미지원)"
 
+        ok = "정상" in status_text
+        prefix = "✅" if ok else "❌"
+        badge_text = f"{prefix} {display_text}"
+
         if row < self.ws_table.rowCount():
             status_item = self.ws_table.item(row, 5)
             if status_item:
-                status_item.setText(display_text)
-                # 색상: "정상"이면 녹색, 아니면 빨간색
-                if "정상" in status_text:
+                if ok:
+                    status_item.setText(badge_text)
                     if not history_ok:
                         from PyQt6.QtGui import QColor
                         color = QColor("#F59E0B")
                     else:
                         color = Qt.GlobalColor.darkGreen
+                    status_item.setToolTip("")
                 else:
                     color = Qt.GlobalColor.red
+                    # v1.5.46: 뱃지에 stage + 짧은 사유 직접 노출
+                    # (마우스 안 올려도 어디서 깨졌는지 보이게).
+                    # full 메시지는 툴팁.
+                    stage = ""
+                    err = ""
+                    try:
+                        import json as _json
+                        from core import paths as _paths
+                        with open(_paths.wholesalers_path(),
+                                  "r", encoding="utf-8") as _f:
+                            _fresh = _json.load(_f).get(wid, {})
+                        stage = _fresh.get("onboard_stage", "") or ""
+                        err = _fresh.get("onboard_error", "") or ""
+                    except Exception:
+                        err = ws_data.get("onboard_error", "") or ""
+                    extras = []
+                    if stage:
+                        extras.append(f"[{stage}]")
+                    if err:
+                        short = err if len(err) <= 50 else err[:50] + "…"
+                        extras.append(short)
+                    if extras:
+                        status_item.setText(
+                            f"{badge_text} — {' '.join(extras)}"
+                        )
+                    else:
+                        status_item.setText(badge_text)
+                    if err:
+                        status_item.setToolTip(err)
                 status_item.setForeground(color)
 
         # 결과를 wholesalers.json에 저장
@@ -1295,13 +1469,13 @@ class SettingsTab(QWidget):
         del_btn.clicked.connect(lambda _, r=row: self._del_wholesaler_row(r))
         self.ws_table.setCellWidget(row, 7, del_btn)
 
-        diag_btn = QPushButton("진단")
+        diag_btn = QPushButton("재연동")
         diag_btn.setToolTip(
-            "도매상 주문 페이지 DOM 구조를 서버에 업로드합니다."
+            "로그인부터 담기까지 자동으로 다시 확인합니다."
         )
         diag_btn.setStyleSheet(btn_small_primary())
         diag_btn.clicked.connect(
-            lambda _, r=row, w=wid, d=data: self._run_ws_structure_analysis(r, w, d)
+            lambda _, r=row, w=wid, d=data: self._run_ws_test(r, w, d)
         )
         self.ws_table.setCellWidget(row, 8, diag_btn)
 
@@ -2130,22 +2304,126 @@ class SettingsTab(QWidget):
 
     # --- 주문 확정 방식 ---
     def _load_confirm_settings(self):
-        settings = _load_json("settings.json")
-        mode = settings.get("order_confirm_mode", "auto")
-        if mode == "cart_only":
-            self._confirm_cart.setChecked(True)
-        else:
-            self._confirm_auto.setChecked(True)
+        # v1.5.46: 로드 중 팝업 방지
+        was_loading = self._loading
+        self._loading = True
+        try:
+            settings = _load_json("settings.json")
+            mode = settings.get("order_confirm_mode", "auto")
+            if mode == "cart_only":
+                self._confirm_cart.setChecked(True)
+            else:
+                self._confirm_auto.setChecked(True)
+        finally:
+            self._loading = was_loading
 
     def _save_confirm_settings(self):
+        """설정 저장만 (UI 팝업은 호출자가 처리)."""
         settings = _load_json("settings.json")
-        settings["order_confirm_mode"] = "cart_only" if self._confirm_cart.isChecked() else "auto"
+        settings["order_confirm_mode"] = (
+            "cart_only" if self._confirm_cart.isChecked() else "auto")
         _save_json("settings.json", settings)
-        mode_text = "장바구니만 담기" if self._confirm_cart.isChecked() else "자동 주문 확정"
-        QMessageBox.information(self, "저장", f"주문 확정 방식: {mode_text}")
-
         if self._on_schedule_changed:
             self._on_schedule_changed()
+
+    # v1.5.46 즉시 적용 핸들러 & 헬퍼 ---------------------------------
+    def _show_toast(self, text: str):
+        """화면 하단 중앙에 2초 노출되는 작은 안내."""
+        from PyQt6.QtCore import QTimer
+        toast = QLabel(text, self)
+        toast.setStyleSheet(
+            "QLabel { background: rgba(20,20,20,0.88); color: white; "
+            "padding: 10px 22px; border-radius: 10px; font-size: 13px; "
+            "font-family: 'Malgun Gothic'; font-weight: 600; }"
+        )
+        toast.adjustSize()
+        toast.move(
+            max(0, (self.width() - toast.width()) // 2),
+            max(40, self.height() - toast.height() - 48)
+        )
+        toast.show()
+        toast.raise_()
+        QTimer.singleShot(2000, toast.deleteLater)
+
+    def _prompt_apply(self, prompt_text: str,
+                      apply_fn, revert_fn=None) -> bool:
+        """변경 확인 팝업. Yes → apply_fn + 토스트. No → revert_fn.
+
+        Returns True if applied.
+        """
+        reply = QMessageBox.question(
+            self, "설정 변경",
+            f"{prompt_text}\n\n변경하시겠습니까?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                apply_fn()
+                self._show_toast("✅ 저장됨")
+                return True
+            except Exception as e:
+                QMessageBox.warning(self, "저장 실패", str(e))
+                if revert_fn:
+                    revert_fn()
+                return False
+        else:
+            if revert_fn:
+                revert_fn()
+            return False
+
+    def _on_confirm_mode_toggled(self, checked: bool, mode: str):
+        """주문 확정 라디오 변경 — 선택된(on) 쪽만 처리."""
+        if self._loading or not checked:
+            return
+        label = "자동 주문 확정" if mode == "auto" else "장바구니만 담기"
+
+        def apply_fn():
+            self._save_confirm_settings()
+
+        def revert_fn():
+            # 원래 저장된 값으로 복원 (signal 재발 방지)
+            prev = _load_json("settings.json").get(
+                "order_confirm_mode", "auto")
+            self._loading = True
+            try:
+                if prev == "cart_only":
+                    self._confirm_cart.setChecked(True)
+                else:
+                    self._confirm_auto.setChecked(True)
+            finally:
+                self._loading = False
+
+        self._prompt_apply(
+            f'주문 확정 방식을 "{label}" 으로 바꿉니다.',
+            apply_fn, revert_fn
+        )
+
+    def _on_sched_mode_toggled(self, checked: bool, mode: str):
+        """예약 일N회/일1회 라디오 — 선택된 쪽만 처리."""
+        if self._loading or not checked:
+            return
+        label = "일 1회 주문" if mode == "once" else "일 2회 이상 (시간대별)"
+
+        def apply_fn():
+            self._save_schedule_settings()
+
+        def revert_fn():
+            prev = _load_json("settings.json").get(
+                "schedule_mode", "multiple")
+            self._loading = True
+            try:
+                if prev == "once":
+                    self._sched_radio_once.setChecked(True)
+                else:
+                    self._sched_radio_multi.setChecked(True)
+            finally:
+                self._loading = False
+
+        self._prompt_apply(
+            f'예약 주문 모드를 "{label}" 로 바꿉니다.',
+            apply_fn, revert_fn
+        )
 
     def scroll_to_schedule(self):
         """예약 자동 주문 카드로 스크롤한다."""
@@ -2155,7 +2433,10 @@ class SettingsTab(QWidget):
         ))
 
     def _on_sched_enabled_toggled(self, enabled: bool):
-        """예약 자동 주문 체크 해제 시 하위 컨트롤 전부 비활성화."""
+        """예약 자동 주문 체크 해제 시 하위 컨트롤 전부 비활성화.
+
+        v1.5.46: 초기 로드가 아니면 즉시 적용 (팝업 + 저장).
+        """
         self._sched_radio_multi.setEnabled(enabled)
         self._sched_radio_once.setEnabled(enabled)
         self._sched_once_time.setEnabled(enabled)
@@ -2165,44 +2446,78 @@ class SettingsTab(QWidget):
             cb.setEnabled(enabled)
             cb.setChecked(cb.isChecked() and enabled)
 
+        if self._loading:
+            return
+
+        label = "켬" if enabled else "끔"
+
+        def apply_fn():
+            self._save_schedule_settings()
+
+        def revert_fn():
+            prev = _load_json("settings.json").get("schedule_enabled", False)
+            self._loading = True
+            try:
+                self.sched_enabled_cb.setChecked(prev)
+                self._on_sched_enabled_toggled(prev)
+            finally:
+                self._loading = False
+
+        self._prompt_apply(
+            f"예약 자동 주문을 \"{label}\" 으로 바꿉니다.",
+            apply_fn, revert_fn
+        )
+
     def _load_schedule_settings(self):
-        settings = _load_json("settings.json")
-        self.sched_enabled_cb.setChecked(settings.get("schedule_enabled", False))
-        self._on_sched_enabled_toggled(self.sched_enabled_cb.isChecked())
+        # v1.5.46: 로드 중 setChecked 가 toggled signal 로 즉시적용 팝업을
+        # 유발하지 않도록 _loading 플래그로 감싼다.
+        was_loading = self._loading
+        self._loading = True
+        try:
+            settings = _load_json("settings.json")
+            self.sched_enabled_cb.setChecked(
+                settings.get("schedule_enabled", False))
+            self._on_sched_enabled_toggled(
+                self.sched_enabled_cb.isChecked())
 
-        # 모드
-        mode = settings.get("schedule_mode", "multiple")
-        if mode == "once":
-            self._sched_radio_once.setChecked(True)
-        else:
-            self._sched_radio_multi.setChecked(True)
-
-        # 일 1회 시간
-        once_time = settings.get("schedule_once_time", "18:30")
-        p = once_time.split(":")
-        self._sched_once_time.setTime(QTime(int(p[0]), int(p[1]) if len(p) > 1 else 0))
-        self._update_once_desc()
-
-        # 기존 시간 행 전부 제거
-        for widget, _, _, _ in self._sched_time_rows:
-            self.sched_time_list.removeWidget(widget)
-            widget.deleteLater()
-        self._sched_time_rows.clear()
-
-        # 일 2회+ 시간 로드 (레거시 order_schedule_times 호환)
-        times = settings.get("schedule_multi_times",
-                             settings.get("order_schedule_times", ["13:00", "18:30"]))
-        for item in times:
-            if isinstance(item, dict):
-                t_str = item.get("time", "12:00")
-                enabled = item.get("enabled", True)
+            # 모드
+            mode = settings.get("schedule_mode", "multiple")
+            if mode == "once":
+                self._sched_radio_once.setChecked(True)
             else:
-                t_str = item
-                enabled = True
-            parts = t_str.split(":")
-            h = int(parts[0]) if parts else 12
-            m = int(parts[1]) if len(parts) > 1 else 0
-            self._add_schedule_time_row(QTime(h, m), enabled)
+                self._sched_radio_multi.setChecked(True)
+
+            # 일 1회 시간
+            once_time = settings.get("schedule_once_time", "18:30")
+            p = once_time.split(":")
+            self._sched_once_time.setTime(
+                QTime(int(p[0]), int(p[1]) if len(p) > 1 else 0))
+            self._update_once_desc()
+
+            # 기존 시간 행 전부 제거
+            for widget, _, _, _ in self._sched_time_rows:
+                self.sched_time_list.removeWidget(widget)
+                widget.deleteLater()
+            self._sched_time_rows.clear()
+
+            # 일 2회+ 시간 로드 (레거시 order_schedule_times 호환)
+            times = settings.get(
+                "schedule_multi_times",
+                settings.get("order_schedule_times",
+                             ["13:00", "18:30"]))
+            for item in times:
+                if isinstance(item, dict):
+                    t_str = item.get("time", "12:00")
+                    enabled = item.get("enabled", True)
+                else:
+                    t_str = item
+                    enabled = True
+                parts = t_str.split(":")
+                h = int(parts[0]) if parts else 12
+                m = int(parts[1]) if len(parts) > 1 else 0
+                self._add_schedule_time_row(QTime(h, m), enabled)
+        finally:
+            self._loading = was_loading
 
     def _save_schedule_settings(self):
         settings = _load_json("settings.json")
@@ -2221,23 +2536,6 @@ class SettingsTab(QWidget):
         # 레거시 키 제거
         settings.pop("order_schedule_times", None)
         _save_json("settings.json", settings)
-
-        status = "켜짐" if self.sched_enabled_cb.isChecked() else "꺼짐"
-        if self._sched_radio_once.isChecked():
-            time_str = self._sched_once_time.time().toString("HH:mm")
-            detail = f"일 1회 / {time_str}"
-        else:
-            enabled_times = [
-                time_edit.time().toString("HH:mm")
-                for _, time_edit, cb, _ in self._sched_time_rows
-                if cb.isChecked()
-            ]
-            detail = f"일 {len(enabled_times)}회 / {', '.join(enabled_times)}" if enabled_times else "활성화된 시간 없음"
-        QMessageBox.information(
-            self, "저장",
-            f"예약 주문 설정이 저장되었습니다.\n"
-            f"자동 주문: {status} / {detail}"
-        )
 
         # 자동주문 탭 요약 동기화
         if self._on_schedule_changed:
@@ -2293,6 +2591,24 @@ class SettingsTab(QWidget):
         except Exception as e:
             self.upd_status_label.setText(f"확인 실패: {e}")
             self.upd_status_label.setStyleSheet(f"color: {_RED}; font-weight: 700;")
+
+    def _open_install_dir(self):
+        """PharmAuto 설치 폴더(exe 가 있는 곳)를 탐색기로 연다."""
+        import sys
+        import subprocess
+        try:
+            if getattr(sys, "frozen", False) or not os.path.exists(
+                os.path.join(paths._project_root(), "main.py")
+            ):
+                target = os.path.dirname(os.path.abspath(sys.executable))
+            else:
+                target = paths._project_root()
+            if not os.path.isdir(target):
+                QMessageBox.warning(self, "폴더 없음", "설치 폴더를 찾지 못했습니다.")
+                return
+            subprocess.Popen(["explorer", target])
+        except Exception as e:
+            QMessageBox.warning(self, "열기 실패", f"탐색기를 열 수 없습니다: {e}")
 
     # --- 원격 지원 ---
     # --- DB 구조 내보내기 ---

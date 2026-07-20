@@ -1,0 +1,50 @@
+{
+  "_note": "지오영 반품 이력 — 별도 페이지 + 행 클릭 모달 (v1.5.46)",
+  "name": "지오영",
+  "base_url": "https://bpm.geoweb.kr",
+  "mode": "separate_page",
+
+  "history_url": "/MyPage/Serial",
+
+  "login": {
+    "url": "/Member/Login",
+    "id_sel": "#LoginID",
+    "pw_sel": "#Password",
+    "btn_sel": ".btn_login"
+  },
+
+  "search": {
+    "keyword": "#txtitem",
+    "date_from": "#dtpFrom",
+    "date_to": "#dtpTo",
+    "search_btn": "button.btn_search"
+  },
+
+  "table": {
+    "selector": "table:first-of-type tbody tr",
+    "columns": {
+      "date": 0,
+      "slip_no": 1,
+      "warehouse": 2,
+      "code": 3,
+      "drug_name": 4,
+      "qty": 5,
+      "price": 6,
+      "amount": 7
+    }
+  },
+
+  "lot_detail": {
+    "method": "row_click_modal",
+    "modal_table": ".geoyoung-dialog table",
+    "columns": {
+      "expiry": 1,
+      "lot": 2,
+      "serial": 3
+    },
+    "close_btn": ".geoyoung-dialog button:has-text(\"닫기\")",
+    "close_fallback": ".geoyoung-dialog .ui-dialog-titlebar-close"
+  },
+
+  "notes": "행 클릭 → jQuery UI 모달 (.geoyoung-dialog) 에 LOT/유효기한/일련번호"
+}

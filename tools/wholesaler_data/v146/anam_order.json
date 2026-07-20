@@ -1,0 +1,47 @@
+{
+  "_note": "아남약품 주문 셀렉터 — global_cart_btn 변종 (체크박스 없음) + iframe (v1.5.46)",
+  "wid": "anam",
+  "name": "아남약품",
+  "url": "http://anampharm.co.kr/Service/Order/Order.asp",
+  "login_url": "http://anampharm.co.kr/HomePage/Contents/Intro/Default.asp",
+
+  "login": {
+    "id_input": "#tbID",
+    "pw_input": "#tbPW",
+    "login_btn": ""
+  },
+
+  "search": {
+    "search_input": "#tx_physic",
+    "search_btn": ""
+  },
+
+  "table": {
+    "layout_mode": "global_cart_btn",
+    "result_rows": "tr.ln_physic",
+    "global_cart_btn": "input[type=image][src*=\"saveBag\"]",
+    "qty_input_in_row": "input[id^=\"qty\"]",
+    "row_checkbox_in_row": "",
+    "cart_iframe": "iframe#ifrm_bag",
+    "cart_rows_sel": "tr[id^=\"bagLine\"]",
+    "cancel_row_chk": "input[type=checkbox]",
+    "clear_all_btn": "#btn_cancel_order",
+    "code_col_idx": 0,
+    "name_col_idx": 2,
+    "unit_col_idx": 3,
+    "stock_col_idx": 6,
+    "price_col_idx": 5,
+    "_comment_behaviors": "v1.5.46 사이트 습성 — HTML 중첩 form 이슈 우회",
+    "qty_commit": "tab",
+    "cart_btn_click": "form_post",
+    "form_name": "frmOrder",
+    "cart_verify_timeout_ms": 12000,
+    "post_click_wait_ms": 500,
+    "schema_version": "v1.5.46"
+  },
+
+  "confirm": {
+    "iframe": "iframe#ifrm_bag",
+    "confirm_btn": "input[type=image][src*=\"btn_order\"]"
+  }
+}

@@ -112,6 +112,9 @@ class WholesalerBase(ABC):
     def __init__(self, config: dict):
         self.name = config.get("name", "")
         self.url = config.get("url", "")
+        # login_url: 로그인 페이지가 주문 페이지(url)와 다른 사이트용.
+        # 없으면 url 로 폴백. (아남/백제/지오영 등)
+        self.login_url = config.get("login_url") or self.url
         self.user_id = config.get("id", "")
         self.password = config.get("pw", "")
         self._browser = None
@@ -164,8 +167,11 @@ class WholesalerBase(ABC):
         if not self._page:
             return
         try:
-            # alert/confirm 다이얼로그 — 핸들러 참조 저장 (나중에 교체 가능)
-            self._dismiss_handler = lambda d: d.dismiss()
+            # alert/confirm 다이얼로그 — accept 가 기본 (v1.5.47).
+            # 자동화 중 뜨는 confirm 은 우리 자동화 흐름에서 발생한 거라 동의가 맞음.
+            # dismiss 는 "정말 비우시겠습니까?" 같은 사용자 동의 필요 confirm 에서
+            # 자동화를 중단시켜 담기/비우기 실패의 원인이 됨 (세화 사례).
+            self._dismiss_handler = lambda d: d.accept()
             self._page.on("dialog", self._dismiss_handler)
         except Exception:
             pass
@@ -450,14 +456,30 @@ class WholesalerBase(ABC):
         page.on("dialog", _accept_handler)
 
         try:
-            # 공통 패턴으로 장바구니 비우기 시도
-            clear_selectors = [
+            # v1.5.47: JSON 의 명시 셀렉터 (clear_all_btn) 우선 시도.
+            # 도매상별 정확한 비우기 버튼이 명시돼 있으면 공통 패턴보다 안전.
+            explicit_clear = ""
+            try:
+                sel_root = getattr(self, "_selectors", {}) or {}
+                tbl_cfg = sel_root.get("table") or sel_root.get("table_sel") or {}
+                if isinstance(tbl_cfg, dict):
+                    explicit_clear = (tbl_cfg.get("clear_all_btn") or "").strip()
+            except Exception:
+                explicit_clear = ""
+
+            # 공통 패턴 — JSON 명시가 있으면 그게 1순위, 그 다음 휴리스틱
+            clear_selectors = []
+            if explicit_clear:
+                clear_selectors.append(explicit_clear)
+            clear_selectors.extend([
                 'button:has-text("전체삭제")',
                 'button:has-text("비우기")',
                 'button:has-text("전체 삭제")',
                 'button:has-text("장바구니 비우기")',
                 'a:has-text("전체삭제")',
-            ]
+                'span:has-text("전체삭제")',
+                'span:has-text("비우기")',
+            ])
             for sel in clear_selectors:
                 try:
                     btn = await page.query_selector(sel)
@@ -554,13 +576,57 @@ class WholesalerBase(ABC):
     """
 
     async def _snapshot_tables(self) -> list:
-        """페이지의 모든 <table> 의 (idx, row_count, innerText) 스냅샷."""
+        """페이지의 모든 <table> 의 (idx, row_count, innerText) 스냅샷.
+
+        v1.5.46: cart_iframe 셀렉터 설정돼있으면 iframe 내부 테이블도 포함.
+        """
         if not self._page:
             return []
         try:
-            return await self._page.evaluate(self._TABLE_SNAPSHOT_JS)
+            snap = await self._page.evaluate(self._TABLE_SNAPSHOT_JS)
         except Exception:
-            return []
+            snap = []
+        # v1.5.46: cart_iframe 안 테이블도 스냅샷에 포함
+        try:
+            table_cfg = (
+                self._selectors.get("table", {})
+                if hasattr(self, "_selectors") and self._selectors
+                else {}
+            )
+            cart_iframe = table_cfg.get("cart_iframe", "") if table_cfg else ""
+            if cart_iframe:
+                iframe_el = await self._page.query_selector(cart_iframe)
+                if iframe_el:
+                    frame = await iframe_el.content_frame()
+                    if frame:
+                        iframe_snap = await frame.evaluate(
+                            self._TABLE_SNAPSHOT_JS
+                        )
+                        if iframe_snap:
+                            snap.extend(iframe_snap)
+        except Exception:
+            pass
+        return snap
+
+    async def _capture_screenshot_b64(self, max_bytes: int = 300_000) -> str:
+        """현재 뷰포트 JPEG 스크린샷을 base64 문자열로 반환 (v1.5.41).
+
+        실패 진단 업로드 용도. 300KB 넘으면 품질을 순차적으로 낮춰 재시도.
+        캡처 불가 또는 끝까지 크면 빈 문자열.
+        """
+        import base64
+        if not self._page:
+            return ""
+        for quality in (45, 25, 12):
+            try:
+                png = await self._page.screenshot(
+                    type="jpeg", quality=quality, full_page=False
+                )
+                if png and len(png) <= max_bytes:
+                    return base64.b64encode(png).decode("ascii")
+            except Exception:
+                continue
+        return ""
 
     async def _verify_cart_added(
         self,

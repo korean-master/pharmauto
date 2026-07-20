@@ -1,0 +1,38 @@
+{
+  "_note": "세화약품 매출내역 — 별도 페이지, LOT 직접 표시 (v1.5.46)",
+  "name": "세화",
+  "base_url": "https://www.esehwa.co.kr",
+  "mode": "separate_page",
+
+  "history_url": "/contents/order/salelist.asp",
+
+  "login": {
+    "url": "/contents/order/order.asp",
+    "id_sel": "input[type=text]:not([readonly])",
+    "pw_sel": "input[type=password]",
+    "btn_sel": ""
+  },
+
+  "search": {
+    "keyword": "#tx_physic_nm",
+    "date_from": "#tx_dateA",
+    "date_to": "#tx_dateZ",
+    "search_btn": ""
+  },
+
+  "table": {
+    "selector": "table.list:has(th:has-text(\"명세일자\")) tbody tr",
+    "columns": {
+      "date": 0,
+      "code": 1,
+      "drug_name": 2,
+      "price": 3,
+      "qty": 4,
+      "amount": 5,
+      "lot": 6,
+      "expiry": 7
+    }
+  },
+
+  "notes": "AngularJS 사이트. 매출내역(salelist.asp) 페이지에서 약품명+기간 검색 → 결과 테이블에 LOT/유효기한 직접 표시. 모달 없음. 엔터로 검색. 기간 input 은 text + ng-model + jQuery UI datepicker (fill() 직접 입력 가능)."
+}

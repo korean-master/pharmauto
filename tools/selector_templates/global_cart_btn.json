@@ -1,0 +1,59 @@
+{
+  "_note": "패턴 B 템플릿 — 페이지 전역 '장바구니담기' 버튼 + 행 체크박스 (세화 등 전통 폼 사이트)",
+  "_example_sites": "세화약품. 각 행에 담기 버튼 없고 페이지 하단에 '장바구니담기' 파란 버튼 1개. 행마다 체크박스 + 수량 input.",
+  "_instructions": [
+    "1. 빈 문자열 채우기",
+    "2. global_cart_btn 은 절대 경로 OK (페이지 전역이라 행 일반화 무관)",
+    "3. row_checkbox_in_row / qty_input_in_row 는 행 내부 상대 경로만"
+  ],
+
+  "wid": "",
+  "name": "",
+  "url": "",
+
+  "search": {
+    "search_input": "",
+    "search_btn": ""
+  },
+
+  "table": {
+    "layout_mode": "global_cart_btn",
+
+    "_comment_rows": "검색 결과 행 셀렉터",
+    "result_rows": "",
+
+    "_comment_global": "페이지 하단 전역 '장바구니담기' 버튼. 절대 경로 OK. 예: button:has-text('장바구니담기')",
+    "global_cart_btn": "",
+
+    "_comment_chk": "행 내부 체크박스 상대 경로. 예: td:first-child > input[type='checkbox']",
+    "row_checkbox_in_row": "",
+
+    "_comment_qty": "행 내부 수량 입력 상대 경로",
+    "qty_input_in_row": "",
+
+    "cart_rows_sel": "",
+
+    "code_col_idx": null,
+    "name_col_idx": null,
+    "unit_col_idx": null,
+    "stock_col_idx": null,
+    "price_col_idx": null,
+
+    "_comment_behaviors": "── 사이트 습성 옵션 (v1.5.46). 없으면 안전 기본값 사용. ──",
+    "_comment_qty_commit": "수량 input 값 커밋 방식. tab=Tab 눌러 blur, change=change 이벤트 디스패치, none=안 함. 기본 'tab'",
+    "qty_commit": "tab",
+    "_comment_cart_click": "담기 버튼 클릭 방식. native=Playwright click, js=JS el.click(), native_then_js=native 실패 시 JS 폴백. 기본 'native_then_js'",
+    "cart_btn_click": "native_then_js",
+    "_comment_cart_timeout": "담기 후 cart_rows_sel 증가 폴링 최대 시간(ms). 기본 12000",
+    "cart_verify_timeout_ms": 12000,
+    "_comment_post_wait": "담기 클릭 직후 대기(ms). Ajax 시작 유예. 기본 500",
+    "post_click_wait_ms": 500,
+
+    "schema_version": "v1.5.45",
+    "auto_detected": false
+  },
+
+  "confirm": {
+    "confirm_btn": ""
+  }
+}

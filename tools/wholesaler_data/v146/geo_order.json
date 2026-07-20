@@ -1,0 +1,37 @@
+{
+  "_note": "지오영 주문 셀렉터 — select_then_add 신규 패턴 (v1.5.46)",
+  "wid": "geo",
+  "name": "지오영",
+  "url": "https://bpm.geoweb.kr/",
+  "login_url": "https://bpm.geoweb.kr/Member/Login",
+
+  "login": {
+    "id_input": "#LoginID",
+    "pw_input": "#Password",
+    "login_btn": ".btn_login"
+  },
+
+  "search": {
+    "search_input": "#txt_product",
+    "search_btn": "button.btn_search"
+  },
+
+  "table": {
+    "layout_mode": "select_then_add",
+    "result_rows": "tr.tr-product-list",
+    "select_method": "row_click",
+    "qty_input": "#product-detail-qty",
+    "cart_btn": "#product-detail-btn-add-product",
+    "cart_rows_sel": "#div-cart-list table tbody tr",
+    "code_col_idx": 1,
+    "name_col_idx": 3,
+    "unit_col_idx": 4,
+    "stock_col_idx": 5,
+    "price_col_idx": null,
+    "schema_version": "v1.5.46"
+  },
+
+  "confirm": {
+    "confirm_btn": "button.btn_order"
+  }
+}

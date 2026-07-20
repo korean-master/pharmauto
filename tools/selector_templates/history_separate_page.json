@@ -1,0 +1,66 @@
+{
+  "_note": "이력 설정 템플릿 — 별도 페이지 + 검색 + 테이블 (지오영/아남)",
+  "_example_sites": "지오영: /MyPage/Serial 에서 약품명+기간 검색 → 결과 테이블 (LOT 은 모달). 아남: /Service/SalesList/SalesList.asp 에서 검색 → 결과 테이블 (LOT 직접).",
+  "_instructions": [
+    "1. 별도 이력/거래 페이지 URL 확인",
+    "2. 약품명 검색 input + 기간 input (from/to) id 추출",
+    "3. 결과 테이블 컬럼 인덱스 (LOT 포함 여부 확인)",
+    "4. LOT 이 결과 테이블에 없으면 lot_detail 섹션 채우기 (모달 방식)"
+  ],
+
+  "name": "",
+  "base_url": "",
+  "mode": "separate_page",
+
+  "history_url": "",
+
+  "login": {
+    "_comment": "이력 페이지 들어가기 전 로그인 필요 — 주문 설정과 동일해도 별도 기록",
+    "url": "",
+    "id_sel": "",
+    "pw_sel": "",
+    "btn_sel": ""
+  },
+
+  "search": {
+    "_comment_keyword": "약품명 검색 input",
+    "keyword": "",
+
+    "_comment_date": "기간 input (from/to). 없으면 빈 문자열",
+    "date_from": "",
+    "date_to": "",
+
+    "_comment_btn": "검색 버튼. 엔터만이면 빈 문자열",
+    "search_btn": ""
+  },
+
+  "table": {
+    "_comment_sel": "결과 테이블 행 셀렉터",
+    "selector": "",
+
+    "_comment_cols": "0-based 컬럼 인덱스. drug_name 필수, LOT/expiry 는 있으면",
+    "columns": {
+      "date": null,
+      "drug_name": null,
+      "qty": null,
+      "lot": null,
+      "expiry": null,
+      "price": null
+    }
+  },
+
+  "lot_detail": {
+    "_comment": "LOT 이 결과 테이블에 직접 없고 모달 클릭 필요한 경우만 채움 (지오영). 직접 있으면 전체 삭제.",
+    "method": "row_click_modal",
+    "modal_table": "",
+    "columns": {
+      "lot": null,
+      "expiry": null,
+      "serial": null
+    },
+    "close_btn": "",
+    "close_fallback": ""
+  },
+
+  "notes": ""
+}

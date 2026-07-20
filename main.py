@@ -151,6 +151,9 @@ class PharmAutoWindow(QMainWindow):
         self._init_scheduler()
         self.setStyleSheet(GLOBAL_STYLE)
 
+        # v1.5.40: 앱 시작 후 5초 뒤 재연동 감지 체크 (실패 상태 도매상의 서버 갱신 여부)
+        QTimer.singleShot(5000, self._check_reonboard_candidates)
+
     def _init_tray(self):
         """시스템 트레이 아이콘 + 메뉴 설정."""
         icon_path = os.path.join(ROOT_DIR, "ui", "icons", "pharmauto.ico")
@@ -269,6 +272,60 @@ class PharmAutoWindow(QMainWindow):
         elif widget is self.order_tab:
             # 설정 탭에서 변경했을 수 있으니 요약 갱신
             self.order_tab._refresh_schedule_summary()
+
+    def _check_reonboard_candidates(self):
+        """실패 상태 도매상의 서버 셀렉터 갱신 여부를 백그라운드에서 확인 (v1.5.40).
+
+        갱신이 감지되면 사용자에게 재연동 시도를 제안한다.
+        """
+        from PyQt6.QtCore import QThread, pyqtSignal
+
+        class _ReonboardChecker(QThread):
+            done = pyqtSignal(list)  # candidates list
+
+            def run(self):
+                try:
+                    from core.reonboard_check import find_candidates
+                    cands = find_candidates()
+                except Exception:
+                    cands = []
+                self.done.emit(cands)
+
+        def _on_done(cands: list):
+            if not cands:
+                return
+            names = ", ".join(c["name"] for c in cands[:5])
+            extra = f" 외 {len(cands) - 5}개" if len(cands) > 5 else ""
+            from PyQt6.QtWidgets import QMessageBox
+            msg = QMessageBox(self)
+            msg.setWindowTitle("연동 재시도 제안")
+            msg.setIcon(QMessageBox.Icon.Question)
+            msg.setText(
+                f"{names}{extra} 도매상의 연동이 준비된 것 같습니다.\n"
+                f"지금 자동으로 다시 시도할까요?"
+            )
+            msg.setStandardButtons(
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if msg.exec() != QMessageBox.StandardButton.Yes:
+                return
+            # 설정 탭으로 이동 + 각 후보 순차 트리거
+            try:
+                self.tabs.setCurrentWidget(self.settings_tab)
+            except Exception:
+                pass
+            for c in cands:
+                try:
+                    self.settings_tab.trigger_reonboard(c["wid"])
+                except Exception:
+                    pass
+
+        checker = _ReonboardChecker()
+        checker.done.connect(_on_done)
+        checker.start()
+        # QThread 수거 방지
+        if not hasattr(self, "_reonboard_checker"):
+            self._reonboard_checker = checker
 
     def _init_scheduler(self):
         from core.scheduler import OrderScheduler
@@ -510,29 +567,49 @@ def _bring_existing_window():
         _app.quit()
 
 
-def _db_connection_broken() -> bool:
-    """설정된 DB에 연결할 수 있는지 빠르게 확인한다."""
+def _db_connection_broken(retries: int = 10, on_attempt=None) -> bool:
+    """설정된 DB에 연결할 수 있는지 확인한다.
+
+    부팅 직후 SQL Server 워밍업 대기 — 3초 timeout x retries 회 재시도
+    (기본 ~30초). 첫 시도에 잡히면 즉시 False. 모두 실패하면 True.
+    on_attempt(i, retries) 콜백으로 splash 메시지 갱신 가능.
+    """
+    import json
+    from core import paths
+    settings_path = paths.settings_path()
+    if not os.path.exists(settings_path):
+        return False
     try:
-        import json
-        from core import paths
-        settings_path = paths.settings_path()
-        if not os.path.exists(settings_path):
-            return False
         with open(settings_path, "r", encoding="utf-8") as f:
             settings = json.load(f)
-        if not settings.get("setup_complete"):
-            return False
-        db = settings.get("db", {})
-        if not db.get("server"):
-            return True
-        import pyodbc
-        from core.db_conn import build_conn_str
-        conn_str = build_conn_str(db)
-        conn = pyodbc.connect(conn_str, timeout=3, readonly=True)
-        conn.close()
-        return False
     except Exception:
         return True
+    if not settings.get("setup_complete"):
+        return False
+    db = settings.get("db", {})
+    if not db.get("server"):
+        return True
+
+    import time
+    import pyodbc
+    from core.db_conn import build_conn_str
+    conn_str = build_conn_str(db)
+    last_err = None
+    for i in range(1, retries + 1):
+        if on_attempt is not None:
+            try:
+                on_attempt(i, retries)
+            except Exception:
+                pass
+        try:
+            conn = pyodbc.connect(conn_str, timeout=3, readonly=True)
+            conn.close()
+            return False
+        except Exception as e:
+            last_err = e
+            if i < retries:
+                time.sleep(1)  # SQL Server 워밍업 대기
+    return True
 
 
 def main():
@@ -569,6 +646,11 @@ def main():
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+
+    # 휠 스크롤 시 포커스 없는 combo/spin 값 변경 차단 (v1.5.46)
+    from ui.wheel_filter import WheelBlocker
+    _wheel_blocker = WheelBlocker(app)
+    app.installEventFilter(_wheel_blocker)
 
     # 앱 아이콘 설정 (작업표시줄 + 타이틀바)
     icon_path = os.path.join(ROOT_DIR, "ui", "icons", "pharmauto.ico")
@@ -620,15 +702,64 @@ def main():
     _hide_splash()
     _check_and_apply_update(app)
 
-    # 첫 실행이거나 DB 연결 불가 시 설치 마법사
+    # 첫 실행 (settings.json 없거나 setup_complete=false) → 설치 마법사
     from ui.setup_wizard import needs_setup
-    if needs_setup() or _db_connection_broken():
+    if needs_setup():
         _hide_splash()
         from ui.setup_wizard import SetupWizard
         wizard = SetupWizard()
         wizard.exec()
         if not wizard.setup_complete:
             sys.exit(0)
+    else:
+        # 이미 세팅된 상태 — DB 만 확인 (부팅 직후 SQL Server 워밍업 대기)
+        # setup_complete=true 인데 wizard 자동 진행하면 settings 덮어써서
+        # 셀렉터/도매상 설정 다 날아갈 수 있음 → 사용자 확인 필수
+        def _on_db_attempt(i, total):
+            # 2회차부터 splash 메시지 (1회차에 잡히는 정상 케이스는 깜빡임 없이 패스)
+            if i >= 2 and splash is not None:
+                splash.show()
+                splash.showMessage(
+                    f"SQL Server 시작 대기 중... ({i}/{total})",
+                    _Qt.AlignmentFlag.AlignBottom | _Qt.AlignmentFlag.AlignHCenter,
+                    _Qt.GlobalColor.black,
+                )
+                app.processEvents()
+
+        if _db_connection_broken(on_attempt=_on_db_attempt):
+            _hide_splash()
+            from PyQt6.QtWidgets import QMessageBox
+            while True:
+                box = QMessageBox()
+                box.setWindowTitle("PharmAuto - DB 연결 실패")
+                box.setIcon(QMessageBox.Icon.Warning)
+                box.setText(
+                    "약국 DB(SQL Server)에 연결할 수 없습니다.\n\n"
+                    "SQL Server 서비스가 실행 중인지 확인하세요.\n"
+                    "서비스가 켜진 후 [재시도]를 눌러 주세요."
+                )
+                retry_btn = box.addButton(
+                    "재시도", QMessageBox.ButtonRole.AcceptRole)
+                change_btn = box.addButton(
+                    "DB 설정 변경", QMessageBox.ButtonRole.ActionRole)
+                quit_btn = box.addButton(
+                    "종료", QMessageBox.ButtonRole.RejectRole)
+                box.setDefaultButton(retry_btn)
+                box.exec()
+                clicked = box.clickedButton()
+                if clicked is retry_btn:
+                    if not _db_connection_broken(retries=5):
+                        break
+                    continue
+                elif clicked is change_btn:
+                    from ui.setup_wizard import SetupWizard
+                    wizard = SetupWizard()
+                    wizard.exec()
+                    if not wizard.setup_complete:
+                        sys.exit(0)
+                    break
+                else:
+                    sys.exit(0)
 
     # 기존 평문 비밀번호/API키 암호화 마이그레이션
     from core.crypto import migrate_plaintext

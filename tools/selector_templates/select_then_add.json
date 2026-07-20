@@ -1,0 +1,57 @@
+{
+  "_note": "패턴 C — 행 선택(클릭) → 별도 영역에서 수량 입력 + 담기 (지오영 등)",
+  "_example_sites": "지오영: 결과 행 클릭하면 우측 제품정보 패널 갱신, 거기 수량/담기 버튼 있음",
+  "_instructions": [
+    "1. 결과 행 클릭 시 어떤 패널이 활성화되는지 확인",
+    "2. 그 패널의 수량 input + 담기 버튼 id/class 추출",
+    "3. cart_btn 과 qty_input 은 결과 테이블 밖 (고정 위치) 셀렉터여야 함"
+  ],
+
+  "wid": "",
+  "name": "",
+  "url": "",
+
+  "login": {
+    "id_input": "",
+    "pw_input": "",
+    "login_btn": ""
+  },
+
+  "search": {
+    "search_input": "",
+    "search_btn": ""
+  },
+
+  "table": {
+    "_comment_layout": "패턴 C: 행 클릭 → 별도 영역에서 수량/담기",
+    "layout_mode": "select_then_add",
+
+    "_comment_rows": "결과 행 셀렉터",
+    "result_rows": "",
+
+    "_comment_select": "행 선택 방법 — 보통 'row_click'",
+    "select_method": "row_click",
+
+    "_comment_qty": "고정 위치 수량 input (행 바깥, 선택된 약 전용)",
+    "qty_input": "",
+
+    "_comment_cart": "고정 위치 담기 버튼 (행 바깥)",
+    "cart_btn": "",
+
+    "_comment_cart_rows": "장바구니 테이블 행 셀렉터",
+    "cart_rows_sel": "",
+
+    "code_col_idx": null,
+    "name_col_idx": null,
+    "unit_col_idx": null,
+    "stock_col_idx": null,
+    "price_col_idx": null,
+
+    "schema_version": "v1.5.46",
+    "auto_detected": false
+  },
+
+  "confirm": {
+    "confirm_btn": ""
+  }
+}

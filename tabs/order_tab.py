@@ -301,8 +301,10 @@ class OrderTab(QWidget):
     def __init__(self):
         super().__init__()
         self.drug_data = []
+        self._raw_data = []
         self.wholesalers = _load_json("wholesalers.json")
         self.exclusions = _load_json("exclusions.json")
+        self.include_excluded = bool(_load_json("settings.json").get("include_excluded_in_query", False))
         self._on_schedule_changed_callback = None
         self._init_ui()
         self._spinner = SpinnerOverlay(self)
@@ -342,6 +344,18 @@ class OrderTab(QWidget):
         self.fetch_btn.setStyleSheet(btn_primary())
         self.fetch_btn.clicked.connect(self._on_fetch)
         top.addWidget(self.fetch_btn)
+
+        self.include_excl_toggle = QCheckBox("제외약품 포함")
+        self.include_excl_toggle.setChecked(self.include_excluded)
+        self.include_excl_toggle.setToolTip(
+            "체크 시 제외약품도 처방조회 결과에 회색으로 표시됩니다.\n"
+            "제외약품은 기본 체크 해제 상태이며, 직접 체크해야 주문에 포함됩니다."
+        )
+        self.include_excl_toggle.setStyleSheet(
+            "QCheckBox { font-family: 'Malgun Gothic'; font-size: 13px; padding: 2px 6px; }"
+        )
+        self.include_excl_toggle.toggled.connect(self._on_include_excluded_toggled)
+        top.addWidget(self.include_excl_toggle)
 
         top.addStretch()
 
@@ -591,29 +605,56 @@ class OrderTab(QWidget):
 
         # 제외 목록 최신 상태로 갱신 (설정 탭에서 해제했을 수 있음)
         self.exclusions = _load_json("exclusions.json")
+        self._raw_data = data
+        self._apply_exclusions_view(reset_checks=True)
 
+    def _apply_exclusions_view(self, reset_checks: bool = False):
+        """raw_data + exclusions + 토글 상태로 drug_data 결정 후 테이블 다시 그리기."""
         now = datetime.now()
-        filtered = []
-        for item in data:
+        visible = []
+        excluded_count = 0
+        for item in self._raw_data:
             code = item["insurance_code"]
             exc = self.exclusions.get(code)
+            is_excluded = False
             if exc:
                 until = exc.get("exclude_until")
                 if until == "permanent":
-                    continue
-                if until and datetime.strptime(until, "%Y-%m-%d") > now:
-                    continue
+                    is_excluded = True
+                elif until and datetime.strptime(until, "%Y-%m-%d") > now:
+                    is_excluded = True
                 else:
                     del self.exclusions[code]
                     _save_json("exclusions.json", self.exclusions)
-            filtered.append(item)
+            view = {**item, "is_excluded": is_excluded}
+            if is_excluded:
+                excluded_count += 1
+                if not self.include_excluded:
+                    continue
+            visible.append(view)
 
-        self.drug_data = filtered
-        self._register_new_drugs(filtered)
-        self._populate_table(reset_checks=True)
-        self.status_label.setText(
-            f"총 {len(filtered)}개 약품 조회됨 (제외 {len(data) - len(filtered)}건)"
-        )
+        self.drug_data = visible
+        # 신규 약품 자동 등록 (제외약품도 inventory entry 필요 — 자동주문은 exclusions.json 으로 막힘)
+        self._register_new_drugs(visible)
+        self._populate_table(reset_checks=reset_checks)
+
+        normal_cnt = sum(1 for d in visible if not d.get("is_excluded"))
+        if self.include_excluded and excluded_count:
+            self.status_label.setText(
+                f"총 {normal_cnt}개 약품 + 제외약품 {excluded_count}건 표시 (체크 후 주문)"
+            )
+        else:
+            self.status_label.setText(
+                f"총 {normal_cnt}개 약품 조회됨 (제외 {excluded_count}건)"
+            )
+
+    def _on_include_excluded_toggled(self, checked: bool):
+        self.include_excluded = bool(checked)
+        settings = _load_json("settings.json")
+        settings["include_excluded_in_query"] = self.include_excluded
+        _save_json("settings.json", settings)
+        if self._raw_data:
+            self._apply_exclusions_view(reset_checks=False)
 
     def _on_fetch_error(self, msg: str):
         self.fetch_btn.setEnabled(True)
@@ -669,15 +710,17 @@ class OrderTab(QWidget):
         from core.inventory import get_current_stock, get_drug_config
 
         # 처방 데이터 새로 조회 시 체크 리셋, 설정 변경 등은 보존
+        # drug_data 가 이미 갱신된 후 호출될 수 있으므로 위젯에 박힌 code property 사용
         saved_checks = {}
         if not reset_checks:
             for row in range(self.table.rowCount()):
                 widget = self.table.cellWidget(row, 0)
-                if widget and row < len(self.drug_data):
+                if widget:
                     cb = widget.findChild(QCheckBox)
                     if cb:
-                        code = self.drug_data[row]["insurance_code"]
-                        saved_checks[code] = cb.isChecked()
+                        code = cb.property("insurance_code")
+                        if code:
+                            saved_checks[code] = cb.isChecked()
 
         _default_ws = _load_json("settings.json").get("default_wholesaler", "")
 
@@ -729,14 +772,17 @@ class OrderTab(QWidget):
             # 적정재고에서 재고 충분하면 주문 불필요
             stock_sufficient = (order_type == "stock" and recommended == 0)
             is_manual = (order_type == "manual")
+            is_excluded = bool(item.get("is_excluded"))
             order_st = order_status_map.get(code, "")
             order_success = order_st in ("ordered", "cart_only")
             order_failed = order_st in ("failed", "out_of_stock")
 
             # 체크박스
-            # 재고 충분/수동/주문완료는 항상 해제 (saved_checks보다 우선)
+            # 제외약품/재고 충분/수동/주문완료는 항상 해제 (saved_checks보다 우선)
             cb = QCheckBox()
-            if stock_sufficient or is_manual:
+            if is_excluded:
+                cb.setChecked(False)
+            elif stock_sufficient or is_manual:
                 cb.setChecked(False)
             elif order_success:
                 cb.setChecked(False)
@@ -745,6 +791,7 @@ class OrderTab(QWidget):
             else:
                 cb.setChecked(True)
             cb.setFixedSize(20, 20)
+            cb.setProperty("insurance_code", code)
             cb_widget = QWidget()
             cb_layout = QHBoxLayout(cb_widget)
             cb_layout.addWidget(cb)
@@ -752,12 +799,17 @@ class OrderTab(QWidget):
             cb_layout.setContentsMargins(0, 0, 0, 0)
             self.table.setCellWidget(row, 0, cb_widget)
 
-            # 약품명
-            name_item = QTableWidgetItem(item["drug_name"])
+            # 약품명 (제외약품은 [제외] 뱃지 prefix)
+            name_text = item["drug_name"]
+            if is_excluded:
+                name_text = f"[제외] {name_text}"
+            name_item = QTableWidgetItem(name_text)
             name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             name_item.setTextAlignment(
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
             )
+            if is_excluded:
+                name_item.setToolTip("자동주문 제외약품 — 주문하려면 체크박스 직접 선택")
             self.table.setItem(row, 1, name_item)
 
             # 선호규격 (클릭 가능)
@@ -811,8 +863,9 @@ class OrderTab(QWidget):
                     stock_item.setForeground(QColor(_GREEN))
             self.table.setItem(row, 5, stock_item)
 
-            # 추천 주문량 (스핀박스)
-            qty_spin = QSpinBox()
+            # 추천 주문량 (스핀박스) — 휠 차단 서브클래스
+            from ui.wheel_filter import NoWheelComboBox, NoWheelSpinBox
+            qty_spin = NoWheelSpinBox()
             qty_spin.setRange(0, 9999)
             qty_spin.setValue(max(0, recommended))
             qty_spin.setMinimumWidth(80)
@@ -822,8 +875,8 @@ class OrderTab(QWidget):
                 qty_spin.setValue(0)
             self.table.setCellWidget(row, 6, qty_spin)
 
-            # 도매상
-            ws_combo = QComboBox()
+            # 도매상 — 휠 차단
+            ws_combo = NoWheelComboBox()
             ws_combo.setMinimumWidth(120)
             ws_combo.setMinimumHeight(34)
             ws_combo.setStyleSheet(COMBO_SMALL)
@@ -834,8 +887,8 @@ class OrderTab(QWidget):
                     ws_combo.setCurrentIndex(idx)
             self.table.setCellWidget(row, 7, ws_combo)
 
-            # 자동주문 제외
-            exc_combo = QComboBox()
+            # 자동주문 제외 — 휠 차단
+            exc_combo = NoWheelComboBox()
             exc_combo.setMinimumWidth(120)
             exc_combo.setMinimumHeight(34)
             exc_combo.setStyleSheet(COMBO_SMALL)
@@ -848,8 +901,8 @@ class OrderTab(QWidget):
 
             self.table.setRowHeight(row, 48)
 
-            # 재고 충분 시 행 회색 처리
-            if stock_sufficient:
+            # 재고 충분 또는 제외약품 시 행 회색 처리
+            if stock_sufficient or is_excluded:
                 for col in range(self.table.columnCount()):
                     it = self.table.item(row, col)
                     if it:
@@ -918,14 +971,11 @@ class OrderTab(QWidget):
 
         if dlg.exec() == DrugSetupDialog.DialogCode.Accepted and dlg.result_config:
             if dlg.result_config["order_type"] == "exclude":
-                # 제외 목록에 추가하고 테이블에서 제거
+                # 제외 목록에 추가, 토글 상태에 따라 사라지거나 회색 표시
                 self.exclusions[code] = {"exclude_until": "permanent", "reason": "자동주문 제외", "drug_name": drug_name}
                 _save_json("exclusions.json", self.exclusions)
-                self.drug_data.pop(row)
-                self.table.removeRow(row)
-                self.status_label.setText(
-                    f"'{drug_name}' 자동주문 제외 처리됨 (남은 {len(self.drug_data)}개)"
-                )
+                self._apply_exclusions_view(reset_checks=False)
+                self.status_label.setText(f"'{drug_name}' 자동주문 제외 처리됨")
                 return
 
             # dialog 내에서 재고가 변경됐을 수 있으므로 최신 cfg를 다시 읽는다
@@ -1085,9 +1135,9 @@ class OrderTab(QWidget):
             self.exclusions[code] = {"exclude_until": until, "reason": text, "drug_name": drug_name}
 
         _save_json("exclusions.json", self.exclusions)
-        self.drug_data.pop(actual_row)
-        self.table.removeRow(actual_row)
-        self.status_label.setText(f"'{drug_name}' {period} 제외 처리됨 (남은 {len(self.drug_data)}개)")
+        # 제외약품 포함 토글에 따라 행 사라지거나 회색으로 표시됨
+        self._apply_exclusions_view(reset_checks=False)
+        self.status_label.setText(f"'{drug_name}' {period} 제외 처리됨")
 
     # ─────────────── 기본 도매상 연동 ───────────────
 
@@ -1132,11 +1182,13 @@ class OrderTab(QWidget):
     # ─────────────── 전체 선택/해제 ───────────────
 
     def _on_header_clicked(self, section: int):
-        """헤더 '선택' 컬럼 클릭 시 전체 선택/해제 토글."""
+        """헤더 '선택' 컬럼 클릭 시 전체 선택/해제 토글. 제외약품은 건너뛴다."""
         if section != 0:
             return
         self._all_checked = not self._all_checked
         for row in range(self.table.rowCount()):
+            if row < len(self.drug_data) and self.drug_data[row].get("is_excluded"):
+                continue
             widget = self.table.cellWidget(row, 0)
             if widget:
                 cb = widget.findChild(QCheckBox)

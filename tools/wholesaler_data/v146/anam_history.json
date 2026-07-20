@@ -1,0 +1,40 @@
+{
+  "_note": "아남약품 반품 이력 — 별도 페이지, LOT 직접 표시 (v1.5.46)",
+  "name": "아남약품",
+  "base_url": "http://anampharm.co.kr",
+  "mode": "separate_page",
+
+  "history_url": "/Service/SalesList/SalesList.asp",
+
+  "login": {
+    "url": "/HomePage/Contents/Intro/Default.asp",
+    "id_sel": "#tbID",
+    "pw_sel": "#tbPW",
+    "btn_sel": ""
+  },
+
+  "search": {
+    "keyword": "#PhysicNm",
+    "date_from": "#sDate",
+    "date_to": "#eDate",
+    "search_btn": ""
+  },
+
+  "table": {
+    "selector": "table:first-of-type tr:nth-child(n+2)",
+    "columns": {
+      "delivery_date": 1,
+      "statement_date": 2,
+      "drug_name": 3,
+      "unit": 4,
+      "price": 5,
+      "qty": 6,
+      "amount": 7,
+      "lot": 8,
+      "expiry": 9,
+      "serial": 10
+    }
+  },
+
+  "notes": "Classic ASP. LOT/유효기한 결과 테이블에 직접 (모달 없음). 엔터로 검색 가능."
+}

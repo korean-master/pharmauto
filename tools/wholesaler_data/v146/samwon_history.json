@@ -1,0 +1,27 @@
+{
+  "_note": "삼원약품 반품 이력 — 주문 페이지 인라인 (v1.5.46)",
+  "name": "삼원약품",
+  "base_url": "https://www.pharmbox.co.kr",
+  "mode": "inline_in_order_page",
+
+  "trigger": {
+    "method": "row_click",
+    "target": "tr[id^=\"PD_PB_LIST_\"]"
+  },
+
+  "history_panel": {
+    "container": ".main-right-order-history",
+    "rows_selector": "#PD_ORDER_HISTORY_LIST tr",
+    "period_btn": "",
+    "columns": {
+      "date": 0,
+      "qty": 1,
+      "lot": 2,
+      "expiry": 3,
+      "price": 4,
+      "amount": 5
+    }
+  },
+
+  "notes": "주문 페이지에서 약품 행 클릭 시 우측 이력 패널 갱신. 기간 버튼 없음 (전체 이력 자동 표시)."
+}

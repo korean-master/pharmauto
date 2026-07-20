@@ -1,0 +1,27 @@
+{
+  "_note": "백제약품 반품 이력 — 주문 페이지 인라인 (v1.5.46)",
+  "name": "백제약품",
+  "base_url": "http://www.ibjp.kr",
+  "mode": "inline_in_order_page",
+
+  "trigger": {
+    "method": "row_click",
+    "target": "tbody.q-virtual-scroll__content tr"
+  },
+
+  "history_panel": {
+    "container": ".left_bottom_left",
+    "rows_selector": ".left_bottom_left tbody tr:not(.no-date)",
+    "period_btn": ".left_bottom_left button:has-text(\"3년\")",
+    "columns": {
+      "name_and_unit": 0,
+      "date": 1,
+      "price": 2,
+      "qty": 3,
+      "lot": 4,
+      "expiry": 5
+    }
+  },
+
+  "notes": "Vue+Quasar. 주문 페이지에서 약품 행 클릭 시 좌하단 패널에 인라인 이력 표시. 3년 버튼 클릭 필수."
+}

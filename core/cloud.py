@@ -270,8 +270,11 @@ def fetch_selectors(domain: str) -> dict | None:
         return None
 
     normalized = normalize_domain(domain)
-    if not normalized or len(normalized) < 3:
+    if not normalized:
         return None
+    # v1.5.48: len(normalized) < 3 가드 제거 — 한글 도메인 ("세화" 2글자 등)
+    # 으로 등록된 도매상은 fetch 자체가 막혀 매번 자동 탐지 fallback 무한루프.
+    # 길이 가드는 의미 없음 (잘못된 short string 도 결국 서버에 데이터 없으면 빈 결과).
 
     try:
         resp = requests.get(
@@ -304,6 +307,35 @@ def fetch_selectors(domain: str) -> dict | None:
     except Exception:
         return None
 
+
+def fetch_selector_updated_at(domain: str) -> str | None:
+    """서버 셀렉터 레코드의 updated_at 시각만 조회 (재연동 감지용).
+
+    v1.5.40: 재연동 자동 감지 기능에서 사용.
+    로컬 failed 상태 도매상의 last_tried_at 과 비교하여,
+    서버 셀렉터가 나중에 갱신되었으면 사용자에게 재시도 제안.
+
+    Returns: ISO 시각 문자열 또는 None.
+    """
+    if not is_enabled() or not domain:
+        return None
+    normalized = normalize_domain(domain)
+    if not normalized:
+        return None
+    # v1.5.48: len < 3 가드 제거 (한글 2글자 도메인 호환)
+    try:
+        resp = requests.get(
+            _api_url("wholesaler_selectors"),
+            headers=_headers(),
+            params={"domain": f"eq.{normalized}", "select": "updated_at"},
+            timeout=5,
+        )
+        rows = resp.json()
+        if not rows:
+            return None
+        return rows[0].get("updated_at")
+    except Exception:
+        return None
 
 
 # ────────── 도매상 이력 검색 설정 (wholesaler_history_config) ──────────

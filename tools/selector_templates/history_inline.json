@@ -1,0 +1,41 @@
+{
+  "_note": "이력 설정 템플릿 — 주문 페이지 인라인 이력 (삼원/백제)",
+  "_example_sites": "삼원: 주문 페이지에서 약품 행 클릭 시 우측/하단 이력 패널 갱신. 별도 페이지 이동 없음.",
+  "_instructions": [
+    "1. 주문 페이지에서 결과 행 클릭 시 어느 패널이 이력으로 갱신되는지 확인",
+    "2. 이력 패널의 container + rows_selector 추출",
+    "3. 기간 버튼 있으면 가장 긴 걸로 (period_btn)"
+  ],
+
+  "name": "",
+  "base_url": "",
+  "mode": "inline_in_order_page",
+
+  "trigger": {
+    "_comment": "주문 결과 행을 클릭해서 이력 패널을 활성화",
+    "method": "row_click",
+    "target": ""
+  },
+
+  "history_panel": {
+    "_comment_container": "이력 패널의 상위 컨테이너 (식별용)",
+    "container": "",
+
+    "_comment_rows": "이력 행 셀렉터. placeholder row 제외 주의 (:not(.no-date) 등)",
+    "rows_selector": "",
+
+    "_comment_period": "최대 기간 버튼 (선택, 있으면 자동 클릭). 예: button:has-text('3년')",
+    "period_btn": "",
+
+    "_comment_cols": "이력 테이블 컬럼 인덱스 (0-based). LOT 필수.",
+    "columns": {
+      "date": null,
+      "qty": null,
+      "lot": null,
+      "expiry": null,
+      "price": null
+    }
+  },
+
+  "notes": ""
+}
