@@ -556,6 +556,15 @@ class SettingsTab(QWidget):
         open_trace_btn.clicked.connect(self._open_traces_dir)
         upd_btn_row.addWidget(open_trace_btn)
 
+        record_sel_btn = QPushButton("셀렉터 녹화")
+        record_sel_btn.setStyleSheet(btn_primary(bg="#0891B2", hover="#0E7490"))
+        record_sel_btn.setToolTip(
+            "새 도매상 셀렉터를 직접 녹화합니다.\n"
+            "브라우저가 열리면 안내에 따라 클릭해 주세요."
+        )
+        record_sel_btn.clicked.connect(self._open_selector_wizard)
+        upd_btn_row.addWidget(record_sel_btn)
+
         self.upd_status_label = QLabel("")
         self.upd_status_label.setStyleSheet(DESCRIPTION)
         upd_btn_row.addWidget(self.upd_status_label)
@@ -2635,6 +2644,12 @@ class SettingsTab(QWidget):
             subprocess.Popen(["explorer", traces_dir])
         except Exception as e:
             QMessageBox.warning(self, "열기 실패", f"탐색기를 열 수 없습니다: {e}")
+
+    def _open_selector_wizard(self):
+        """도매상 셀렉터 녹화 마법사를 연다."""
+        from ui.selector_wizard import SelectorWizardDialog
+        dlg = SelectorWizardDialog(self)
+        dlg.exec()
 
     # --- 원격 지원 ---
     # --- DB 구조 내보내기 ---
